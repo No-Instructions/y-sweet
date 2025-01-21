@@ -1,0 +1,26 @@
+# fly.toml app configuration file generated for crates-solitary-dust-3552 on 2024-12-03T11:41:11-08:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'y-sweet-serve-staging'
+primary_region = 'lax'
+
+kill_signal = "SIGTERM"
+kill_timeout = "5m0s"
+
+[build]
+  dockerfile = "Dockerfile" 
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
