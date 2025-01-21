@@ -1,1 +1,4 @@
 target
+.auth.staging.env
+.auth.env
+y-sweet-worker/dist
