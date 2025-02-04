@@ -48,7 +48,30 @@ enum ServSubcommand {
         #[clap(long, env = "Y_SWEET_AUTH")]
         auth: Option<String>,
 
-        #[clap(long, env = "Y_SWEET_URL_PREFIX")]
+        #[clap(
+            long,
+            env = "Y_SWEET_URL_PREFIX",
+            env = "FLY_APP_NAME",
+            value_parser = |v: &str| -> Result<Url, String> {
+                if v.contains("://") {
+                    // It's a full URL from Y_SWEET_URL_PREFIX
+                    let url = Url::parse(v).map_err(|e| e.to_string())?;
+                    // Set the Y_SWEET_PREFIX_URL environment variable if it's not already set
+                    if env::var("Y_SWEET_PREFIX_URL").is_err() {
+                        env::set_var("Y_SWEET_PREFIX_URL", url.as_str());
+                    }
+                    Ok(url)
+                } else {
+                    // It's an app name from FLY_APP_NAME
+                    let url = Url::parse(&format!("https://{}.fly.dev", v)).map_err(|e| e.to_string())?;
+                    // Set the Y_SWEET_PREFIX_URL environment variable if it's not already set
+                    if env::var("Y_SWEET_PREFIX_URL").is_err() {
+                        env::set_var("Y_SWEET_PREFIX_URL", url.as_str());
+                    }
+                    Ok(url)
+                }
+            }
+        )]
         url_prefix: Option<Url>,
 
         #[clap(long)]
