@@ -372,6 +372,19 @@ impl Authenticator {
         let authenticator = Authenticator::new(&key)?;
         Ok(authenticator)
     }
+
+    pub fn decode_token(&self, token: &str) -> Result<Payload, AuthError> {
+        let token = if let Some((_, token)) = token.split_once('.') {
+            token
+        } else {
+            token
+        };
+
+        let auth_req: AuthenticatedRequest =
+            bincode_decode(&b64_decode(token)?).or(Err(AuthError::InvalidToken))?;
+
+        Ok(auth_req.payload)
+    }
 }
 
 #[cfg(test)]
