@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use url::Url;
-use y_sweet::cli::{print_auth_message, print_server_url};
+use y_sweet::cli::{print_auth_message, print_server_url, sign_stdin, verify_stdin};
 use y_sweet::stores::filesystem::FileSystemStore;
 use y_sweet_core::{
     auth::Authenticator,
@@ -105,6 +105,19 @@ enum ServSubcommand {
 
         #[clap(long, default_value = "10", env = "Y_SWEET_CHECKPOINT_FREQ_SECONDS")]
         checkpoint_freq_seconds: u64,
+    },
+
+    Sign {
+        #[clap(long, env = "Y_SWEET_AUTH")]
+        auth: String,
+    },
+
+    Verify {
+        #[clap(long, env = "Y_SWEET_AUTH")]
+        auth: String,
+
+        #[clap(long)]
+        doc_id: Option<String>,
     },
 }
 
@@ -275,6 +288,14 @@ async fn main() -> Result<()> {
         }
         ServSubcommand::Version => {
             println!("{}", VERSION);
+        }
+        ServSubcommand::Sign { auth } => {
+            let authenticator = Authenticator::new(auth)?;
+            sign_stdin(&authenticator).await?;
+        }
+        ServSubcommand::Verify { auth, doc_id } => {
+            let authenticator = Authenticator::new(auth)?;
+            verify_stdin(&authenticator, doc_id.as_deref()).await?;
         }
         ServSubcommand::ServeDoc {
             port,
