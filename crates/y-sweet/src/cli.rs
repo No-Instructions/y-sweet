@@ -66,21 +66,22 @@ pub fn print_auth_message(auth: &Authenticator) {
     );
     println!();
 }
-
 #[derive(Deserialize)]
 struct SignInput {
+    #[serde(rename = "docId")]
     doc_id: Option<String>,
     authorization: Option<String>,
 }
 
 #[derive(Serialize)]
 struct SignOutput {
+    #[serde(rename = "docId")]
     doc_id: String,
     token: String,
     authorization: Authorization,
     #[serde(skip_serializing_if = "Option::is_none")]
     url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "baseUrl", skip_serializing_if = "Option::is_none")]
     base_url: Option<String>,
 }
 
@@ -103,6 +104,7 @@ struct VerificationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     authorization: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "docId")]
     doc_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -117,7 +119,7 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
 
     let doc_id = input
         .doc_id
-        .ok_or_else(|| anyhow::anyhow!("doc_id is required"))?;
+        .ok_or_else(|| anyhow::anyhow!("docId is required"))?;
 
     let authorization = match input.authorization.as_deref() {
         Some("read") => Authorization::ReadOnly,
@@ -225,7 +227,7 @@ pub async fn verify_stdin(auth: &Authenticator, doc_id: Option<&str>) -> anyhow:
                     kind: "unknown".to_string(),
                     authorization: None,
                     doc_id: None,
-                    error: Some("No doc_id provided for document token verification".to_string()),
+                    error: Some("No docId provided for document token verification".to_string()),
                 }
             }
         }
