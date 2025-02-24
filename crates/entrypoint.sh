@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e  # Exit on error
 
-# Handle signals properly
-trap "exit" TERM INT
-
 # If Y_SWEET_URL_PREFIX is not set but FLY_APP_NAME is, construct the URL
 if [ -z "$Y_SWEET_URL_PREFIX" ] && [ -n "$FLY_APP_NAME" ]; then
     export Y_SWEET_URL_PREFIX="https://$FLY_APP_NAME.fly.dev"
