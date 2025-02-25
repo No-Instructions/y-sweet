@@ -32,8 +32,8 @@ use tracing::{span, Instrument, Level};
 use url::Url;
 use y_sweet_core::{
     api_types::{
-        validate_doc_name, AuthDocRequest, Authorization, ClientToken, DocCreationRequest,
-        NewDocResponse,
+        validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken, DocCreationRequest,
+        FileDownloadUrlResponse, FileUploadRequest, FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -333,6 +333,9 @@ impl Server {
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
             )
+            // File endpoints
+            .route("/f/:file_hash/upload", post(handle_file_upload_url))
+            .route("/f/:file_hash/download-url", get(handle_file_download_url))
             .with_state(self.clone())
     }
 
@@ -753,6 +756,96 @@ fn get_token_from_header(
         Some(bearer.token().to_string())
     } else {
         None
+    }
+}
+
+async fn handle_file_upload_url(
+    State(server_state): State<Arc<Server>>,
+    Path(file_hash): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+    Json(body): Json<FileUploadRequest>,
+) -> Result<Json<FileUploadUrlResponse>, AppError> {
+    // Validate the file hash format (SHA256)
+    if !validate_file_hash(&file_hash) {
+        return Err(AppError(StatusCode::BAD_REQUEST, anyhow!("Invalid file hash format")));
+    }
+    
+    // Verify token with Full permission
+    let token = get_token_from_header(auth_header);
+    let authorization = server_state.verify_doc_token(token.as_deref(), &file_hash)?;
+    
+    // Only allow Full permission to upload
+    if !matches!(authorization, Authorization::Full) {
+        return Err(AppError(StatusCode::FORBIDDEN, anyhow!("Insufficient permissions to upload files")));
+    }
+    
+    // Check if we have a store configured
+    if server_state.store.is_none() {
+        return Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("No store configured for file uploads"),
+        ));
+    }
+    
+    // Generate the upload URL - files will be stored with "files/" prefix
+    let key = format!("files/{}", file_hash);
+    let upload_url = server_state
+        .store
+        .as_ref()
+        .unwrap()
+        .generate_upload_url(&key, body.content_type.as_deref(), body.content_length)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+    
+    if let Some(url) = upload_url {
+        Ok(Json(FileUploadUrlResponse { upload_url: url }))
+    } else {
+        Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("Failed to generate upload URL"),
+        ))
+    }
+}
+
+async fn handle_file_download_url(
+    State(server_state): State<Arc<Server>>,
+    Path(file_hash): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<FileDownloadUrlResponse>, AppError> {
+    // Validate the file hash format (SHA256)
+    if !validate_file_hash(&file_hash) {
+        return Err(AppError(StatusCode::BAD_REQUEST, anyhow!("Invalid file hash format")));
+    }
+    
+    // Verify token - both ReadOnly and Full permissions can download
+    let token = get_token_from_header(auth_header);
+    let _ = server_state.verify_doc_token(token.as_deref(), &file_hash)?;
+    
+    // Check if we have a store configured
+    if server_state.store.is_none() {
+        return Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("No store configured for file downloads"),
+        ));
+    }
+    
+    // Generate the download URL
+    let key = format!("files/{}", file_hash);
+    let download_url = server_state
+        .store
+        .as_ref()
+        .unwrap()
+        .generate_download_url(&key)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+    
+    if let Some(url) = download_url {
+        Ok(Json(FileDownloadUrlResponse { download_url: url }))
+    } else {
+        Err(AppError(
+            StatusCode::NOT_FOUND,
+            anyhow!("File not found"),
+        ))
     }
 }
 

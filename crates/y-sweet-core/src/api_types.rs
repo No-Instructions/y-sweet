@@ -6,6 +6,42 @@ pub struct NewDocResponse {
     pub doc_id: String,
 }
 
+#[derive(Deserialize)]
+pub struct FileUploadRequest {
+    /// Optional content type of the file
+    #[serde(rename = "contentType")]
+    pub content_type: Option<String>,
+    
+    /// Optional content length of the file
+    #[serde(rename = "contentLength")]
+    pub content_length: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct FileUploadUrlResponse {
+    /// The presigned URL for uploading a file
+    #[serde(rename = "uploadUrl")]
+    pub upload_url: String,
+}
+
+#[derive(Serialize)]
+pub struct FileDownloadUrlResponse {
+    /// The presigned URL for downloading a file
+    #[serde(rename = "downloadUrl")]
+    pub download_url: String,
+}
+
+/// Validate that the file hash is a valid SHA256 hash (64 hex characters)
+pub fn validate_file_hash(hash: &str) -> bool {
+    // SHA256 hash is 64 characters long hex string
+    if hash.len() != 64 {
+        return false;
+    }
+    
+    // Check if all characters are valid hex digits
+    hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 #[derive(Copy, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Authorization {
     #[serde(rename = "read-only")]
