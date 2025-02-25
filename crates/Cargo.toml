@@ -4,8 +4,15 @@ resolver = "2"
 members = [
     "y-sweet",
     "y-sweet-core",
+    "y-sign",
 ]
 
 exclude = [
     "y-sweet-worker",
 ]
+
+[profile.release]
+opt-level = 'z'  # Optimize for size
+lto = true       # Enable Link Time Optimization
+codegen-units = 1 # Further size optimization
+strip = true     # Strip symbols
