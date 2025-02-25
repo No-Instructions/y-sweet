@@ -13,6 +13,8 @@ pub enum StoreError {
     NotAuthorized(String),
     #[error("Error connecting to store. {0}")]
     ConnectionError(String),
+    #[error("Unsupported operation. {0}")]
+    UnsupportedOperation(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -25,6 +27,25 @@ pub trait Store: 'static {
     async fn set(&self, key: &str, value: Vec<u8>) -> Result<()>;
     async fn remove(&self, key: &str) -> Result<()>;
     async fn exists(&self, key: &str) -> Result<bool>;
+
+    // Generate presigned URL for uploading file to storage
+    async fn generate_upload_url(
+        &self,
+        _key: &str,
+        _content_type: Option<&str>,
+        _content_length: Option<u64>,
+    ) -> Result<Option<String>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support generating presigned URLs".to_string(),
+        ))
+    }
+
+    // Generate presigned URL for downloading file from storage
+    async fn generate_download_url(&self, _key: &str) -> Result<Option<String>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support generating presigned URLs".to_string(),
+        ))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -35,4 +56,23 @@ pub trait Store: Send + Sync {
     async fn set(&self, key: &str, value: Vec<u8>) -> Result<()>;
     async fn remove(&self, key: &str) -> Result<()>;
     async fn exists(&self, key: &str) -> Result<bool>;
+
+    // Generate presigned URL for uploading file to storage
+    async fn generate_upload_url(
+        &self,
+        _key: &str,
+        _content_type: Option<&str>,
+        _content_length: Option<u64>,
+    ) -> Result<Option<String>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support generating presigned URLs".to_string(),
+        ))
+    }
+
+    // Generate presigned URL for downloading file from storage
+    async fn generate_download_url(&self, _key: &str) -> Result<Option<String>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support generating presigned URLs".to_string(),
+        ))
+    }
 }

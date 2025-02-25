@@ -221,6 +221,40 @@ impl Store for S3Store {
     async fn exists(&self, key: &str) -> Result<bool> {
         self.exists(key).await
     }
+
+    async fn generate_upload_url(
+        &self,
+        key: &str,
+        _content_type: Option<&str>,
+        _content_length: Option<u64>,
+    ) -> Result<Option<String>> {
+        self.init().await?;
+        let prefixed_key = self.prefixed_key(key);
+
+        let action = self
+            .bucket
+            .put_object(Some(&self.credentials), &prefixed_key);
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+
+        Ok(Some(url.to_string()))
+    }
+
+    async fn generate_download_url(&self, key: &str) -> Result<Option<String>> {
+        self.init().await?;
+        let prefixed_key = self.prefixed_key(key);
+
+        // Check if object exists before generating URL
+        if !self.exists(&prefixed_key).await? {
+            return Ok(None);
+        }
+
+        let action = self
+            .bucket
+            .get_object(Some(&self.credentials), &prefixed_key);
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+
+        Ok(Some(url.to_string()))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -244,5 +278,39 @@ impl Store for S3Store {
 
     async fn exists(&self, key: &str) -> Result<bool> {
         self.exists(key).await
+    }
+
+    async fn generate_upload_url(
+        &self,
+        key: &str,
+        _content_type: Option<&str>,
+        _content_length: Option<u64>,
+    ) -> Result<Option<String>> {
+        self.init().await?;
+        let prefixed_key = self.prefixed_key(key);
+
+        let action = self
+            .bucket
+            .put_object(Some(&self.credentials), &prefixed_key);
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+
+        Ok(Some(url.to_string()))
+    }
+
+    async fn generate_download_url(&self, key: &str) -> Result<Option<String>> {
+        self.init().await?;
+        let prefixed_key = self.prefixed_key(key);
+
+        // Check if object exists before generating URL
+        if !self.exists(&prefixed_key).await? {
+            return Ok(None);
+        }
+
+        let action = self
+            .bucket
+            .get_object(Some(&self.credentials), &prefixed_key);
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+
+        Ok(Some(url.to_string()))
     }
 }
