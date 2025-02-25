@@ -1,6 +1,11 @@
-# y_sweet_sdk
+# Y-Sweet Python Packages
 
-## Usage
+This repository contains Python packages for interacting with Y-Sweet:
+
+1. `y_sweet_sdk` - Client for the Y-Sweet server
+2. `y_sign` - Python bindings for the y-sign token generation utility
+
+## Y-Sweet SDK Usage
 
 ```python
 from y_sweet_sdk import DocumentManager
@@ -35,6 +40,28 @@ async with (
 `y_sweet_sdk` is only used to talk directly with the Y-Sweet server to obtain a WebSocket URL to pass to a client.
 Use a Yjs client like [ypy-websocket](https://davidbrochart.github.io/ypy-websocket/usage/client/) or [pycrdt](https://github.com/jupyter-server/pycrdt)
 in conjunction with `y_sweet_sdk` to access the actual Y.Doc data.
+
+## Y-Sign Usage
+
+```python
+from y_sign import YSignTokenGenerator, Authorization
+
+# Initialize with your Y-Sweet authentication key
+auth_key = "your-y-sweet-auth-key"  # Get this from your Y-Sweet configuration
+generator = YSignTokenGenerator(auth_key)
+
+# Generate a document token
+doc_token = generator.generate_document_token("my-document-id")
+print(f"Document token: {doc_token['token']}")
+
+# Generate a file token
+file_token = generator.generate_file_token("file-hash-value")
+
+# Check if a token is valid
+is_valid = generator.is_token_valid(doc_token["token"], "my-document-id")
+```
+
+For more information about the y-sign module, see [Y-Sign Documentation](src/y_sign/README.md).
 
 ## Developing
 
