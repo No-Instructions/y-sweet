@@ -200,7 +200,8 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
                 .file_hash
                 .ok_or_else(|| anyhow::anyhow!("fileHash is required for file tokens"))?;
 
-            let token = auth.gen_file_token(&file_hash, authorization.clone(), expiration);
+            let token =
+                auth.gen_file_token(&file_hash, authorization.clone(), expiration, None, None);
 
             // For files, we don't generate URLs since they are accessed through the file endpoints
             let output = SignOutput {
