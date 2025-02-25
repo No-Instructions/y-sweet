@@ -95,6 +95,9 @@ enum ServSubcommand {
 
         #[clap(long)]
         doc_id: Option<String>,
+        
+        #[clap(long)]
+        file_hash: Option<String>,
     },
 }
 
@@ -270,9 +273,11 @@ async fn main() -> Result<()> {
             let authenticator = Authenticator::new(auth)?;
             sign_stdin(&authenticator).await?;
         }
-        ServSubcommand::Verify { auth, doc_id } => {
+        ServSubcommand::Verify { auth, doc_id, file_hash } => {
             let authenticator = Authenticator::new(auth)?;
-            verify_stdin(&authenticator, doc_id.as_deref()).await?;
+            // Use the doc_id if provided, otherwise use file_hash if provided
+            let id = doc_id.as_deref().or(file_hash.as_deref());
+            verify_stdin(&authenticator, id).await?;
         }
         ServSubcommand::ServeDoc {
             port,

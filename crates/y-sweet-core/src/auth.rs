@@ -101,6 +101,7 @@ pub struct DocPermission {
 pub enum Permission {
     Server,
     Doc(DocPermission),
+    File(DocPermission), // Reusing DocPermission since the structure is the same
 }
 
 #[derive(Serialize, Deserialize)]
@@ -335,6 +336,22 @@ impl Authenticator {
         );
         self.sign(payload)
     }
+    
+    pub fn gen_file_token(
+        &self,
+        file_hash: &str,
+        authorization: Authorization,
+        expiration_time: ExpirationTimeEpochMillis,
+    ) -> String {
+        let payload = Payload::new_with_expiration(
+            Permission::File(DocPermission {
+                doc_id: file_hash.to_string(),
+                authorization,
+            }),
+            expiration_time,
+        );
+        self.sign(payload)
+    }
 
     fn verify_token(
         &self,
@@ -357,6 +374,13 @@ impl Authenticator {
             Permission::Doc(doc_permission) => {
                 if doc_permission.doc_id == doc {
                     Ok(doc_permission.authorization)
+                } else {
+                    Err(AuthError::InvalidResource)
+                }
+            }
+            Permission::File(file_permission) => {
+                if file_permission.doc_id == doc {
+                    Ok(file_permission.authorization)
                 } else {
                     Err(AuthError::InvalidResource)
                 }
