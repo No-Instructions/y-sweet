@@ -42,7 +42,7 @@ pub fn validate_file_hash(hash: &str) -> bool {
     hash.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-#[derive(Copy, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum Authorization {
     #[serde(rename = "read-only")]
     ReadOnly,

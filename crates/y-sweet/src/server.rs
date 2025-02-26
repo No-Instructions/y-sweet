@@ -929,6 +929,7 @@ fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authorizati
 mod test {
     use super::*;
     use y_sweet_core::api_types::Authorization;
+    use y_sweet_core::auth::{Authenticator, ExpirationTimeEpochMillis};
 
     #[tokio::test]
     async fn test_auth_doc() {
@@ -965,6 +966,44 @@ mod test {
         assert_eq!(token.url, expected_url);
         assert_eq!(token.doc_id, doc_id);
         assert!(token.token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_file_metadata() {
+        // Create a server with an authenticator
+        let auth = Authenticator::gen_key().unwrap();
+        let server_state = Server::new(
+            None,
+            Duration::from_secs(60),
+            Some(auth.clone()),
+            None,
+            CancellationToken::new(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        // Create a file token with metadata
+        let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let content_type = "application/json";
+        let content_length = 12345;
+
+        let token = auth.gen_file_token(
+            file_hash,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(current_time_epoch_millis() + 1000),
+            Some(content_type),
+            Some(content_length),
+        );
+
+        // Test get_file_metadata
+        let (authorization, token_content_type, token_content_length) = server_state
+            .get_file_metadata(Some(&token), file_hash)
+            .unwrap();
+
+        assert_eq!(authorization, Authorization::Full);
+        assert_eq!(token_content_type, Some(content_type.to_string()));
+        assert_eq!(token_content_length, Some(content_length));
     }
 
     #[tokio::test]

@@ -23,7 +23,6 @@ use y_sweet_core::{
     },
 };
 
-const DEFAULT_S3_REGION: &str = "us-east-1";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
@@ -101,61 +100,13 @@ enum ServSubcommand {
     },
 }
 
-const S3_ACCESS_KEY_ID: &str = "AWS_ACCESS_KEY_ID";
-const S3_SECRET_ACCESS_KEY: &str = "AWS_SECRET_ACCESS_KEY";
-const S3_SESSION_TOKEN: &str = "AWS_SESSION_TOKEN";
-const S3_REGION: &str = "AWS_REGION";
-const S3_ENDPOINT: &str = "AWS_ENDPOINT_URL_S3";
-const S3_USE_PATH_STYLE: &str = "AWS_S3_USE_PATH_STYLE";
-fn parse_s3_config_from_env_and_args(
-    bucket: String,
-    prefix: Option<String>,
-) -> anyhow::Result<S3Config> {
-    let use_path_style = env::var(S3_USE_PATH_STYLE).ok();
-    let path_style = if let Some(use_path_style) = use_path_style {
-        if use_path_style.to_lowercase() == "true" {
-            true
-        } else if use_path_style.to_lowercase() == "false" || use_path_style.is_empty() {
-            false
-        } else {
-            anyhow::bail!(
-                "If AWS_S3_USE_PATH_STYLE is set, it must be either \"true\" or \"false\""
-            )
-        }
-    } else {
-        false
-    };
-
-    Ok(S3Config {
-        key: env::var(S3_ACCESS_KEY_ID)
-            .map_err(|_| anyhow::anyhow!("{} env var not supplied", S3_ACCESS_KEY_ID))?,
-        region: env::var(S3_REGION).unwrap_or_else(|_| DEFAULT_S3_REGION.to_string()),
-        endpoint: env::var(S3_ENDPOINT).unwrap_or_else(|_| {
-            format!(
-                "https://s3.dualstack.{}.amazonaws.com",
-                env::var(S3_REGION).unwrap_or_else(|_| DEFAULT_S3_REGION.to_string())
-            )
-        }),
-        secret: env::var(S3_SECRET_ACCESS_KEY)
-            .map_err(|_| anyhow::anyhow!("{} env var not supplied", S3_SECRET_ACCESS_KEY))?,
-        token: env::var(S3_SESSION_TOKEN).ok(),
-        bucket,
-        bucket_prefix: prefix,
-        // If the endpoint is overridden, we assume that the user wants path-style URLs.
-        path_style,
-    })
-}
-
 fn get_store_from_opts(store_path: &str) -> Result<Box<dyn Store>> {
     if store_path.starts_with("s3://") {
-        let url = url::Url::parse(store_path)?;
-        let bucket = url
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("Invalid S3 URL"))?
-            .to_owned();
-        let bucket_prefix = url.path().trim_start_matches('/').to_owned();
-        let bucket_prefix = (!bucket_prefix.is_empty()).then_some(bucket_prefix); // "" => None
-        let config = parse_s3_config_from_env_and_args(bucket, bucket_prefix)?;
+        // Set the Y_SWEET_STORE environment variable so S3Config::from_env can use it
+        env::set_var("Y_SWEET_STORE", store_path);
+
+        // Use the unified S3Config::from_env method
+        let config = S3Config::from_env(None, None)?;
         let store = S3Store::new(config);
         Ok(Box::new(store))
     } else {
@@ -301,7 +252,6 @@ async fn main() -> Result<()> {
                         }
 
                         let prefix = parts.join("/");
-
                         Some(prefix)
                     } else {
                         // As far as y-sweet is concerned, `STORAGE_BUCKET` = "" is equivalent to `STORAGE_BUCKET` not being set.
@@ -311,7 +261,8 @@ async fn main() -> Result<()> {
                     None
                 };
 
-                let s3_config = parse_s3_config_from_env_and_args(bucket, prefix)?;
+                // Use the unified S3Config::from_env method with explicit bucket and prefix
+                let s3_config = S3Config::from_env(Some(bucket), prefix)?;
                 let store = S3Store::new(s3_config);
                 let store: Box<dyn Store> = Box::new(store);
                 store.init().await?;

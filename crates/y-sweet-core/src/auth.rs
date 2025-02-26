@@ -84,7 +84,7 @@ pub enum AuthError {
     KeyMismatch,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, PartialOrd, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, PartialOrd, Debug, Clone)]
 pub struct Authenticator {
     #[serde(with = "b64")]
     private_key: Vec<u8>,
@@ -401,6 +401,31 @@ impl Authenticator {
         }
     }
 
+    pub fn verify_file_token(
+        &self,
+        token: &str,
+        file_hash: &str,
+        current_time_epoch_millis: u64,
+    ) -> Result<Authorization, AuthError> {
+        // Reuse the doc token verification since it already handles both document and file tokens
+        self.verify_doc_token(token, file_hash, current_time_epoch_millis)
+    }
+
+    pub fn file_token_metadata(
+        &self,
+        token: &str,
+    ) -> Result<Option<(Option<String>, Option<u64>)>, AuthError> {
+        let payload = self.decode_token(token)?;
+
+        match payload.payload {
+            Permission::File(file_permission) => Ok(Some((
+                file_permission.content_type,
+                file_permission.content_length,
+            ))),
+            _ => Ok(None), // Not a file token
+        }
+    }
+
     pub fn gen_key() -> Result<Authenticator, AuthError> {
         let key = rand::thread_rng().gen::<[u8; 30]>();
         let key = b64_encode(&key);
@@ -426,6 +451,70 @@ impl Authenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_file_token_with_metadata() {
+        let authenticator = Authenticator::gen_key().unwrap();
+        let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let content_type = "application/json";
+        let content_length = 12345;
+
+        // Generate token with content-type and length
+        let token = authenticator.gen_file_token(
+            file_hash,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(0),
+            Some(content_type),
+            Some(content_length),
+        );
+
+        // Verify the token works for authentication
+        assert!(matches!(
+            authenticator.verify_doc_token(&token, file_hash, 0),
+            Ok(Authorization::Full)
+        ));
+
+        // Decode the token and verify metadata
+        let payload = authenticator.decode_token(&token).unwrap();
+        if let Permission::File(file_permission) = payload.payload {
+            assert_eq!(file_permission.file_hash, file_hash);
+            assert_eq!(file_permission.content_type, Some(content_type.to_string()));
+            assert_eq!(file_permission.content_length, Some(content_length));
+        } else {
+            panic!("Expected File permission type");
+        }
+    }
+
+    #[test]
+    fn test_file_token_without_metadata() {
+        let authenticator = Authenticator::gen_key().unwrap();
+        let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+
+        // Generate token without content-type and length
+        let token = authenticator.gen_file_token(
+            file_hash,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(0),
+            None,
+            None,
+        );
+
+        // Verify the token
+        assert!(matches!(
+            authenticator.verify_doc_token(&token, file_hash, 0),
+            Ok(Authorization::Full)
+        ));
+
+        // Decode the token and verify no metadata present
+        let payload = authenticator.decode_token(&token).unwrap();
+        if let Permission::File(file_permission) = payload.payload {
+            assert_eq!(file_permission.file_hash, file_hash);
+            assert_eq!(file_permission.content_type, None);
+            assert_eq!(file_permission.content_length, None);
+        } else {
+            panic!("Expected File permission type");
+        }
+    }
 
     #[test]
     fn test_flex_b64() {
