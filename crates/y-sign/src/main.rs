@@ -21,6 +21,8 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
     let file_hash = input.get("fileHash").and_then(|v| v.as_str());
     let token_type = input.get("type").and_then(|v| v.as_str()).unwrap_or("document");
     let auth_str = input.get("authorization").and_then(|v| v.as_str()).unwrap_or("full");
+    let content_type = input.get("contentType").and_then(|v| v.as_str());
+    let content_length = input.get("contentLength").and_then(|v| v.as_u64());
     
     if token_type != "document" && token_type != "file" {
         anyhow::bail!("Invalid token type: {}. Must be 'document' or 'file'", token_type);
@@ -63,11 +65,19 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
             let file_hash = file_hash
                 .ok_or_else(|| anyhow::anyhow!("fileHash is required for file tokens"))?;
             
-            let token = auth.gen_file_token(file_hash, authorization, expiration);
+            let token = auth.gen_file_token(file_hash, authorization, expiration, content_type, content_length);
             
             output.insert("fileHash".to_string(), serde_json::Value::String(file_hash.to_string()));
             output.insert("token".to_string(), serde_json::Value::String(token));
             output.insert("type".to_string(), serde_json::Value::String("file".to_string()));
+            
+            if let Some(ct) = content_type {
+                output.insert("contentType".to_string(), serde_json::Value::String(ct.to_string()));
+            }
+            
+            if let Some(cl) = content_length {
+                output.insert("contentLength".to_string(), serde_json::Value::Number(serde_json::Number::from(cl)));
+            }
             
             let auth_value = match authorization {
                 Authorization::ReadOnly => "read-only",

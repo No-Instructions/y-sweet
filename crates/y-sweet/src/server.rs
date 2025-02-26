@@ -35,7 +35,7 @@ use y_sweet_core::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken, DocCreationRequest,
         FileDownloadUrlResponse, FileUploadRequest, FileUploadUrlResponse, NewDocResponse,
     },
-    auth::{Authenticator, ExpirationTimeEpochMillis, DEFAULT_EXPIRATION_SECONDS},
+    auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
     doc_sync::DocWithSyncKv,
     store::Store,
@@ -395,6 +395,44 @@ impl Server {
             }
         } else {
             Ok(Authorization::Full)
+        }
+    }
+    
+    fn get_file_metadata(
+        &self,
+        token: Option<&str>,
+        file_hash: &str,
+    ) -> Result<(Authorization, Option<String>, Option<u64>), AppError> {
+        if let Some(authenticator) = &self.authenticator {
+            if let Some(token) = token {
+                // First verify that the token is valid for this file
+                let auth = authenticator
+                    .verify_doc_token(token, file_hash, current_time_epoch_millis())
+                    .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+                    
+                // Then decode the token to get file metadata if available
+                let payload = authenticator.decode_token(token)
+                    .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
+                    
+                if let Permission::File(file_permission) = payload.payload {
+                    if file_permission.file_hash != file_hash {
+                        return Err(AppError(
+                            StatusCode::UNAUTHORIZED,
+                            anyhow!("Token is not valid for requested file"),
+                        ));
+                    }
+                    
+                    Ok((auth, file_permission.content_type, file_permission.content_length))
+                } else {
+                    // It's a valid token but not a file token
+                    Ok((auth, None, None))
+                }
+            } else {
+                Err(AppError(StatusCode::UNAUTHORIZED, anyhow!("No token provided.")))?
+            }
+        } else {
+            // If no authentication key, allow all access without metadata
+            Ok((Authorization::Full, None, None))
         }
     }
 
@@ -770,9 +808,10 @@ async fn handle_file_upload_url(
         return Err(AppError(StatusCode::BAD_REQUEST, anyhow!("Invalid file hash format")));
     }
     
-    // Verify token with Full permission
+    // Get token and extract metadata
     let token = get_token_from_header(auth_header);
-    let authorization = server_state.verify_doc_token(token.as_deref(), &file_hash)?;
+    let (authorization, token_content_type, token_content_length) = 
+        server_state.get_file_metadata(token.as_deref(), &file_hash)?;
     
     // Only allow Full permission to upload
     if !matches!(authorization, Authorization::Full) {
@@ -787,13 +826,17 @@ async fn handle_file_upload_url(
         ));
     }
     
+    // Use token metadata first, then fall back to request body
+    let content_type = token_content_type.as_deref().or(body.content_type.as_deref());
+    let content_length = token_content_length.or(body.content_length);
+    
     // Generate the upload URL - files will be stored with "files/" prefix
     let key = format!("files/{}", file_hash);
     let upload_url = server_state
         .store
         .as_ref()
         .unwrap()
-        .generate_upload_url(&key, body.content_type.as_deref(), body.content_length)
+        .generate_upload_url(&key, content_type, content_length)
         .await
         .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
     

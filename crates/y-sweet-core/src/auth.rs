@@ -98,10 +98,18 @@ pub struct DocPermission {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct FilePermission {
+    pub file_hash: String,
+    pub authorization: Authorization,
+    pub content_type: Option<String>,
+    pub content_length: Option<u64>,
+}
+
+#[derive(Serialize, Deserialize)]
 pub enum Permission {
     Server,
     Doc(DocPermission),
-    File(DocPermission), // Reusing DocPermission since the structure is the same
+    File(FilePermission),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -342,11 +350,15 @@ impl Authenticator {
         file_hash: &str,
         authorization: Authorization,
         expiration_time: ExpirationTimeEpochMillis,
+        content_type: Option<&str>,
+        content_length: Option<u64>,
     ) -> String {
         let payload = Payload::new_with_expiration(
-            Permission::File(DocPermission {
-                doc_id: file_hash.to_string(),
+            Permission::File(FilePermission {
+                file_hash: file_hash.to_string(),
                 authorization,
+                content_type: content_type.map(|s| s.to_string()),
+                content_length,
             }),
             expiration_time,
         );
@@ -379,7 +391,7 @@ impl Authenticator {
                 }
             }
             Permission::File(file_permission) => {
-                if file_permission.doc_id == doc {
+                if file_permission.file_hash == doc {
                     Ok(file_permission.authorization)
                 } else {
                     Err(AuthError::InvalidResource)

@@ -222,12 +222,23 @@ impl Store for S3Store {
         self.exists(key).await
     }
     
-    async fn generate_upload_url(&self, key: &str, _content_type: Option<&str>, _content_length: Option<u64>) -> Result<Option<String>> {
+    async fn generate_upload_url(&self, key: &str, content_type: Option<&str>, mut _content_length: Option<u64>) -> Result<Option<String>> {
         self.init().await?;
         let prefixed_key = self.prefixed_key(key);
         
-        let action = self.bucket.put_object(Some(&self.credentials), &prefixed_key);
+        // Create action for presigned PUT request
+        let mut action = self.bucket.put_object(Some(&self.credentials), &prefixed_key);
+        
+        // Set content-type if provided
+        if let Some(content_type) = content_type {
+            action.headers_mut().insert("Content-Type", content_type);
+        }
+        
+        // Sign the URL with time
         let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        
+        // Note: Content-Length constraint is not directly supported by rusty-s3 at the PUT action level
+        // This would need to be enforced at the application level or through post-upload validation
         
         Ok(Some(url.to_string()))
     }
@@ -271,12 +282,23 @@ impl Store for S3Store {
         self.exists(key).await
     }
     
-    async fn generate_upload_url(&self, key: &str, _content_type: Option<&str>, _content_length: Option<u64>) -> Result<Option<String>> {
+    async fn generate_upload_url(&self, key: &str, content_type: Option<&str>, mut _content_length: Option<u64>) -> Result<Option<String>> {
         self.init().await?;
         let prefixed_key = self.prefixed_key(key);
         
-        let action = self.bucket.put_object(Some(&self.credentials), &prefixed_key);
+        // Create action for presigned PUT request
+        let mut action = self.bucket.put_object(Some(&self.credentials), &prefixed_key);
+        
+        // Set content-type if provided
+        if let Some(content_type) = content_type {
+            action.headers_mut().insert("Content-Type", content_type);
+        }
+        
+        // Sign the URL with time
         let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        
+        // Note: Content-Length constraint is not directly supported by rusty-s3 at the PUT action level
+        // This would need to be enforced at the application level or through post-upload validation
         
         Ok(Some(url.to_string()))
     }
