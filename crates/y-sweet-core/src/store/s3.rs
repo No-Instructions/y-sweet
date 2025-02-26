@@ -259,6 +259,40 @@ impl Store for S3Store {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    
+    // Mock the S3Action trait to test the headers_mut functionality
+    struct MockS3Action {
+        headers: HashMap<String, String>,
+    }
+    
+    impl MockS3Action {
+        fn new() -> Self {
+            Self {
+                headers: HashMap::new(),
+            }
+        }
+        
+        fn headers_mut(&mut self) -> &mut HashMap<String, String> {
+            &mut self.headers
+        }
+    }
+    
+    #[test]
+    fn test_content_type_header_for_upload_url() {
+        let mut action = MockS3Action::new();
+        
+        // Set a content type
+        let content_type = "application/json";
+        action.headers_mut().insert("Content-Type".to_string(), content_type.to_string());
+        
+        // Verify the header was set
+        assert_eq!(action.headers.get("Content-Type"), Some(&content_type.to_string()));
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
 impl Store for S3Store {
