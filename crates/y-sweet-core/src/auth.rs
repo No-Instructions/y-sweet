@@ -400,6 +400,27 @@ impl Authenticator {
             Permission::Server => Ok(Authorization::Full), // Server tokens can access any doc.
         }
     }
+    
+    pub fn verify_file_token(
+        &self,
+        token: &str,
+        file_hash: &str,
+        current_time_epoch_millis: u64,
+    ) -> Result<Authorization, AuthError> {
+        // Reuse the doc token verification since it already handles both document and file tokens
+        self.verify_doc_token(token, file_hash, current_time_epoch_millis)
+    }
+    
+    pub fn file_token_metadata(&self, token: &str) -> Result<Option<(Option<String>, Option<u64>)>, AuthError> {
+        let payload = self.decode_token(token)?;
+        
+        match payload.payload {
+            Permission::File(file_permission) => {
+                Ok(Some((file_permission.content_type, file_permission.content_length)))
+            },
+            _ => Ok(None), // Not a file token
+        }
+    }
 
     pub fn gen_key() -> Result<Authenticator, AuthError> {
         let key = rand::thread_rng().gen::<[u8; 30]>();

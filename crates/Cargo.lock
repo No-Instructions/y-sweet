@@ -2065,8 +2065,11 @@ version = "0.8.1"
 dependencies = [
  "anyhow",
  "clap",
+ "rusty-s3",
  "serde_json",
+ "time",
  "tokio",
+ "url",
  "y-sweet-core",
 ]
 
@@ -2120,6 +2123,7 @@ dependencies = [
  "time",
  "tokio",
  "tracing",
+ "url",
  "yrs",
  "yrs-kvstore",
 ]
