@@ -116,6 +116,8 @@ impl TokenGenerator {
         file_hash: &str,
         authorization: PyAuthorization,
         py: Python<'_>,
+        content_type: Option<&str>,
+        content_length: Option<u64>,
     ) -> PyResult<PyObject> {
         let current_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -129,7 +131,7 @@ impl TokenGenerator {
         );
         
         let auth_rust: Authorization = authorization.into();
-        let token = self.authenticator.gen_file_token(file_hash, auth_rust, expiration);
+        let token = self.authenticator.gen_file_token(file_hash, auth_rust, expiration, content_type, content_length);
         
         // Create Python dict to return
         let result = PyDict::new(py);
@@ -142,6 +144,15 @@ impl TokenGenerator {
             Authorization::Full => "full",
         };
         result.set_item("authorization", auth_value)?;
+        
+        // Add content type and length if provided
+        if let Some(ct) = content_type {
+            result.set_item("contentType", ct)?;
+        }
+        
+        if let Some(cl) = content_length {
+            result.set_item("contentLength", cl)?;
+        }
         
         Ok(result.into())
     }
@@ -205,13 +216,22 @@ impl TokenGenerator {
             },
             y_sweet_core::auth::Permission::File(file_permission) => {
                 result.set_item("type", "file")?;
-                result.set_item("fileHash", file_permission.doc_id)?;
+                result.set_item("fileHash", file_permission.file_hash)?;
                 
                 let auth_value = match file_permission.authorization {
                     Authorization::ReadOnly => "read-only",
                     Authorization::Full => "full",
                 };
                 result.set_item("authorization", auth_value)?;
+                
+                // Add content type and length if available
+                if let Some(content_type) = &file_permission.content_type {
+                    result.set_item("contentType", content_type)?;
+                }
+                
+                if let Some(content_length) = file_permission.content_length {
+                    result.set_item("contentLength", content_length)?;
+                }
             },
         }
         
@@ -221,6 +241,44 @@ impl TokenGenerator {
         }
         
         Ok(result.into())
+    }
+    
+    // Generate a presigned upload URL for a file
+    #[pyo3(signature = (token, endpoint=None, path_style=false))]
+    fn generate_presigned_upload_url(
+        &self,
+        token: &str,
+        endpoint: Option<String>,
+        path_style: bool,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        // To implement this, we need to interact with the S3Store, but that would
+        // require more of the y-sweet-core to be exposed. For now, we'll
+        // recommend using the y-sign CLI directly with the presign subcommand.
+        
+        let error_msg = "This functionality is not directly supported in the Python bindings. \
+                         Please use the YSignTokenGenerator class from the 'y_sign' module \
+                         which uses the y-sign CLI binary.";
+        
+        Err(YSignError::new_err(error_msg))
+    }
+    
+    // Generate a presigned download URL for a file
+    #[pyo3(signature = (token, endpoint=None, path_style=false))]
+    fn generate_presigned_download_url(
+        &self,
+        token: &str,
+        endpoint: Option<String>,
+        path_style: bool,
+        py: Python<'_>,
+    ) -> PyResult<PyObject> {
+        // Same as above, recommend using the y-sign CLI directly
+        
+        let error_msg = "This functionality is not directly supported in the Python bindings. \
+                         Please use the YSignTokenGenerator class from the 'y_sign' module \
+                         which uses the y-sign CLI binary.";
+        
+        Err(YSignError::new_err(error_msg))
     }
 }
 

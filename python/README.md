@@ -54,8 +54,17 @@ generator = YSignTokenGenerator(auth_key)
 doc_token = generator.generate_document_token("my-document-id")
 print(f"Document token: {doc_token['token']}")
 
-# Generate a file token
-file_token = generator.generate_file_token("file-hash-value")
+# Generate a file token with content type and size constraints
+file_token = generator.generate_file_token(
+    "file-hash-value",
+    content_type="text/plain",
+    content_length=1024
+)
+
+# Generate presigned S3 URLs for file upload/download
+# Requires proper S3 configuration via environment variables
+upload_url = generator.generate_presigned_upload_url(file_token["token"])
+download_url = generator.generate_presigned_download_url(file_token["token"])
 
 # Check if a token is valid
 is_valid = generator.is_token_valid(doc_token["token"], "my-document-id")

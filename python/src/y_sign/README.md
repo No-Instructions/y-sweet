@@ -73,12 +73,14 @@ Generate a token for document access.
 
 Returns a dictionary containing the token information.
 
-##### `generate_file_token(file_hash, authorization=Authorization.FULL)`
+##### `generate_file_token(file_hash, authorization=Authorization.FULL, content_type=None, content_length=None)`
 
 Generate a token for file access.
 
 - `file_hash`: The file hash to generate a token for
 - `authorization`: The authorization level (Authorization.READ_ONLY or Authorization.FULL)
+- `content_type`: Optional content type for the file (e.g., "text/plain")
+- `content_length`: Optional content length in bytes for the file
 
 Returns a dictionary containing the token information.
 
@@ -99,6 +101,26 @@ Check if a token is valid.
 - `resource_id`: Optional document ID or file hash to verify against
 
 Returns a boolean indicating whether the token is valid.
+
+##### `generate_presigned_upload_url(token, endpoint=None, path_style=False)`
+
+Generate a presigned URL for uploading a file.
+
+- `token`: The file token to use
+- `endpoint`: Optional S3 endpoint URL
+- `path_style`: Whether to use path-style S3 URLs (default: False)
+
+Returns a dictionary containing the presigned URL and metadata.
+
+##### `generate_presigned_download_url(token, endpoint=None, path_style=False)`
+
+Generate a presigned URL for downloading a file.
+
+- `token`: The file token to use
+- `endpoint`: Optional S3 endpoint URL
+- `path_style`: Whether to use path-style S3 URLs (default: False)
+
+Returns a dictionary containing the presigned URL and metadata.
 
 ### Enums
 

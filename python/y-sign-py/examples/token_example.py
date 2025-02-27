@@ -35,7 +35,12 @@ def main():
         
         # Generate a file token
         print("\nGenerating file token...")
-        file_token = generator.generate_file_token(file_hash, PyAuthorization.Full)
+        file_token = generator.generate_file_token(
+            file_hash, 
+            PyAuthorization.Full,
+            content_type="text/plain",
+            content_length=len(file_hash)
+        )
         print(f"File token: {json.dumps(file_token, indent=2)}")
         
         # Generate a server token
