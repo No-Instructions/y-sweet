@@ -3,3 +3,5 @@ data
 node_modules
 .vscode
 .venv
+CLAUDE.md
+.auth*
