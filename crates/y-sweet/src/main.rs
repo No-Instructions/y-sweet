@@ -230,6 +230,7 @@ async fn main() -> Result<()> {
             let id = doc_id.as_deref().or(file_hash.as_deref());
             verify_stdin(&authenticator, id).await?;
         }
+        
         ServSubcommand::ServeDoc {
             port,
             host,
