@@ -113,6 +113,7 @@ impl TokenGenerator {
     // Generate a file token
     fn generate_file_token(
         &self,
+        doc_id: &str,
         file_hash: &str,
         authorization: PyAuthorization,
         py: Python<'_>,
@@ -131,12 +132,13 @@ impl TokenGenerator {
         );
         
         let auth_rust: Authorization = authorization.into();
-        let token = self.authenticator.gen_file_token(file_hash, auth_rust, expiration, content_type, content_length);
+        let token = self.authenticator.gen_file_token(file_hash, doc_id, auth_rust, expiration, content_type, content_length);
         
         // Create Python dict to return
         let result = PyDict::new(py);
-        result.set_item("fileHash", file_hash)?;
+        result.set_item("docId", doc_id)?;
         result.set_item("token", token)?;
+        result.set_item("fileHash", file_hash)?;
         result.set_item("type", "file")?;
         
         let auth_value = match auth_rust {

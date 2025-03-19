@@ -16,3 +16,6 @@ time = "0.3.20"
 tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 url = "2.4.0"
 y-sweet-core = { version = "0.8.1", path = "../y-sweet-core" }
+
+[dev-dependencies]
+tempfile = "3.5.0"
