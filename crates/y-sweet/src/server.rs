@@ -33,7 +33,7 @@ use url::Url;
 use y_sweet_core::{
     api_types::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken, DocCreationRequest,
-        FileDownloadUrlResponse, FileUploadRequest, FileUploadUrlResponse, NewDocResponse,
+        FileDownloadUrlResponse, FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -334,7 +334,7 @@ impl Server {
                 get(handle_socket_upgrade_full_path),
             )
             // File endpoints
-            .route("/f/:file_hash/upload", post(handle_file_upload_url))
+            .route("/f/:file_hash/upload-url", post(handle_file_upload_url))
             .route("/f/:file_hash/download-url", get(handle_file_download_url))
             .with_state(self.clone())
     }
@@ -801,7 +801,6 @@ async fn handle_file_upload_url(
     State(server_state): State<Arc<Server>>,
     Path(file_hash): Path<String>,
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
-    Json(body): Json<FileUploadRequest>,
 ) -> Result<Json<FileUploadUrlResponse>, AppError> {
     // Validate the file hash format (SHA256)
     if !validate_file_hash(&file_hash) {
@@ -827,8 +826,8 @@ async fn handle_file_upload_url(
     }
     
     // Use token metadata first, then fall back to request body
-    let content_type = token_content_type.as_deref().or(body.content_type.as_deref());
-    let content_length = token_content_length.or(body.content_length);
+    let content_type = token_content_type.as_deref();
+    let content_length = token_content_length;
     
     // Generate the upload URL - files will be stored with "files/" prefix
     let key = format!("files/{}", file_hash);

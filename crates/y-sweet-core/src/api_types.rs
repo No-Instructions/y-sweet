@@ -6,17 +6,6 @@ pub struct NewDocResponse {
     pub doc_id: String,
 }
 
-#[derive(Deserialize)]
-pub struct FileUploadRequest {
-    /// Optional content type of the file
-    #[serde(rename = "contentType")]
-    pub content_type: Option<String>,
-    
-    /// Optional content length of the file
-    #[serde(rename = "contentLength")]
-    pub content_length: Option<u64>,
-}
-
 #[derive(Serialize)]
 pub struct FileUploadUrlResponse {
     /// The presigned URL for uploading a file
