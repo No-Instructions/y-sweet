@@ -26,7 +26,7 @@ pub fn validate_file_hash(hash: &str) -> bool {
     if hash.len() != 64 {
         return false;
     }
-    
+
     // Check if all characters are valid hex digits
     hash.chars().all(|c| c.is_ascii_hexdigit())
 }

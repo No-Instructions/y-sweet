@@ -94,7 +94,7 @@ enum ServSubcommand {
 
         #[clap(long)]
         doc_id: Option<String>,
-        
+
         #[clap(long)]
         file_hash: Option<String>,
     },
@@ -104,7 +104,7 @@ fn get_store_from_opts(store_path: &str) -> Result<Box<dyn Store>> {
     if store_path.starts_with("s3://") {
         // Set the Y_SWEET_STORE environment variable so S3Config::from_env can use it
         env::set_var("Y_SWEET_STORE", store_path);
-        
+
         // Use the unified S3Config::from_env method
         let config = S3Config::from_env(None, None)?;
         let store = S3Store::new(config);
@@ -224,13 +224,17 @@ async fn main() -> Result<()> {
             let authenticator = Authenticator::new(auth)?;
             sign_stdin(&authenticator).await?;
         }
-        ServSubcommand::Verify { auth, doc_id, file_hash } => {
+        ServSubcommand::Verify {
+            auth,
+            doc_id,
+            file_hash,
+        } => {
             let authenticator = Authenticator::new(auth)?;
             // Use the doc_id if provided, otherwise use file_hash if provided
             let id = doc_id.as_deref().or(file_hash.as_deref());
             verify_stdin(&authenticator, id).await?;
         }
-        
+
         ServSubcommand::ServeDoc {
             port,
             host,

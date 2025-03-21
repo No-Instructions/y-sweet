@@ -103,6 +103,7 @@ pub struct FilePermission {
     pub authorization: Authorization,
     pub content_type: Option<String>,
     pub content_length: Option<u64>,
+    pub doc_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -344,10 +345,11 @@ impl Authenticator {
         );
         self.sign(payload)
     }
-    
+
     pub fn gen_file_token(
         &self,
         file_hash: &str,
+        doc_id: &str,
         authorization: Authorization,
         expiration_time: ExpirationTimeEpochMillis,
         content_type: Option<&str>,
@@ -356,6 +358,7 @@ impl Authenticator {
         let payload = Payload::new_with_expiration(
             Permission::File(FilePermission {
                 file_hash: file_hash.to_string(),
+                doc_id: doc_id.to_string(),
                 authorization,
                 content_type: content_type.map(|s| s.to_string()),
                 content_length,
@@ -391,7 +394,9 @@ impl Authenticator {
                 }
             }
             Permission::File(file_permission) => {
-                if file_permission.file_hash == doc {
+                // Only check for file tokens using doc_id, not file_hash
+                // This prevents document tokens from being misinterpreted
+                if file_permission.doc_id == doc {
                     Ok(file_permission.authorization)
                 } else {
                     Err(AuthError::InvalidResource)
@@ -400,24 +405,61 @@ impl Authenticator {
             Permission::Server => Ok(Authorization::Full), // Server tokens can access any doc.
         }
     }
-    
+
     pub fn verify_file_token(
         &self,
         token: &str,
         file_hash: &str,
         current_time_epoch_millis: u64,
     ) -> Result<Authorization, AuthError> {
-        // Reuse the doc token verification since it already handles both document and file tokens
-        self.verify_doc_token(token, file_hash, current_time_epoch_millis)
-    }
-    
-    pub fn file_token_metadata(&self, token: &str) -> Result<Option<(Option<String>, Option<u64>)>, AuthError> {
-        let payload = self.decode_token(token)?;
-        
-        match payload.payload {
+        let payload = self.verify_token(token, current_time_epoch_millis)?;
+
+        match payload {
             Permission::File(file_permission) => {
-                Ok(Some((file_permission.content_type, file_permission.content_length)))
-            },
+                if file_permission.file_hash == file_hash {
+                    Ok(file_permission.authorization)
+                } else {
+                    Err(AuthError::InvalidResource)
+                }
+            }
+            Permission::Server => Ok(Authorization::Full), // Server tokens can access any file
+            _ => Err(AuthError::InvalidResource),
+        }
+    }
+
+    pub fn verify_file_token_for_doc(
+        &self,
+        token: &str,
+        doc_id: &str,
+        current_time_epoch_millis: u64,
+    ) -> Result<Authorization, AuthError> {
+        let payload = self.verify_token(token, current_time_epoch_millis)?;
+
+        match payload {
+            Permission::File(file_permission) => {
+                if file_permission.doc_id == doc_id {
+                    Ok(file_permission.authorization)
+                } else {
+                    Err(AuthError::InvalidResource)
+                }
+            }
+            Permission::Server => Ok(Authorization::Full), // Server tokens can access any doc
+            _ => Err(AuthError::InvalidResource),
+        }
+    }
+
+    pub fn file_token_metadata(
+        &self,
+        token: &str,
+    ) -> Result<Option<(String, Option<String>, Option<u64>)>, AuthError> {
+        let payload = self.decode_token(token)?;
+
+        match payload.payload {
+            Permission::File(file_permission) => Ok(Some((
+                file_permission.doc_id,
+                file_permission.content_type,
+                file_permission.content_length,
+            ))),
             _ => Ok(None), // Not a file token
         }
     }
@@ -447,64 +489,88 @@ impl Authenticator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_file_token_with_metadata() {
         let authenticator = Authenticator::gen_key().unwrap();
         let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        let doc_id = "doc123";
         let content_type = "application/json";
         let content_length = 12345;
-        
+
         // Generate token with content-type and length
         let token = authenticator.gen_file_token(
             file_hash,
+            doc_id,
             Authorization::Full,
             ExpirationTimeEpochMillis(0),
             Some(content_type),
             Some(content_length),
         );
-        
-        // Verify the token works for authentication
+
+        // Verify the token works for file hash authentication
         assert!(matches!(
-            authenticator.verify_doc_token(&token, file_hash, 0),
+            authenticator.verify_file_token(&token, file_hash, 0),
             Ok(Authorization::Full)
         ));
-        
+
+        // Verify the token works for doc authentication
+        assert!(matches!(
+            authenticator.verify_file_token_for_doc(&token, doc_id, 0),
+            Ok(Authorization::Full)
+        ));
+
         // Decode the token and verify metadata
         let payload = authenticator.decode_token(&token).unwrap();
         if let Permission::File(file_permission) = payload.payload {
             assert_eq!(file_permission.file_hash, file_hash);
+            assert_eq!(file_permission.doc_id, doc_id);
             assert_eq!(file_permission.content_type, Some(content_type.to_string()));
             assert_eq!(file_permission.content_length, Some(content_length));
         } else {
             panic!("Expected File permission type");
         }
+
+        // Test file_token_metadata
+        let metadata = authenticator.file_token_metadata(&token).unwrap().unwrap();
+        assert_eq!(metadata.0, doc_id);
+        assert_eq!(metadata.1, Some(content_type.to_string()));
+        assert_eq!(metadata.2, Some(content_length));
     }
-    
+
     #[test]
     fn test_file_token_without_metadata() {
         let authenticator = Authenticator::gen_key().unwrap();
         let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-        
+        let doc_id = "doc123";
+
         // Generate token without content-type and length
         let token = authenticator.gen_file_token(
             file_hash,
+            doc_id,
             Authorization::Full,
             ExpirationTimeEpochMillis(0),
             None,
             None,
         );
-        
-        // Verify the token
+
+        // Verify the token with file hash
         assert!(matches!(
-            authenticator.verify_doc_token(&token, file_hash, 0),
+            authenticator.verify_file_token(&token, file_hash, 0),
             Ok(Authorization::Full)
         ));
-        
+
+        // Verify the token with doc id
+        assert!(matches!(
+            authenticator.verify_file_token_for_doc(&token, doc_id, 0),
+            Ok(Authorization::Full)
+        ));
+
         // Decode the token and verify no metadata present
         let payload = authenticator.decode_token(&token).unwrap();
         if let Permission::File(file_permission) = payload.payload {
             assert_eq!(file_permission.file_hash, file_hash);
+            assert_eq!(file_permission.doc_id, doc_id);
             assert_eq!(file_permission.content_type, None);
             assert_eq!(file_permission.content_length, None);
         } else {

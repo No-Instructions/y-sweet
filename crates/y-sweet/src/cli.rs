@@ -127,14 +127,17 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
     stdin.read_to_string(&mut buffer).await?;
 
     let input: SignInput = serde_json::from_str(&buffer)?;
-    
+
     // Determine token type - default to "document" if not specified
     let token_type = input.token_type.as_deref().unwrap_or("document");
-    
+
     if token_type != "document" && token_type != "file" {
-        anyhow::bail!("Invalid token type: {}. Must be 'document' or 'file'", token_type);
+        anyhow::bail!(
+            "Invalid token type: {}. Must be 'document' or 'file'",
+            token_type
+        );
     }
-    
+
     let authorization = match input.authorization.as_deref() {
         Some("read") => Authorization::ReadOnly,
         Some("full") => Authorization::Full,
@@ -154,9 +157,9 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
             let doc_id = input
                 .doc_id
                 .ok_or_else(|| anyhow::anyhow!("docId is required for document tokens"))?;
-                
+
             let token = auth.gen_doc_token(&doc_id, authorization.clone(), expiration);
-            
+
             let (url, base_url) = if let Ok(prefix_url) = std::env::var("Y_SWEET_PREFIX_URL") {
                 let prefix_url = Url::parse(&prefix_url)?;
                 let mut ws_url = prefix_url.clone();
@@ -191,17 +194,29 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
             };
 
             println!("{}", serde_json::to_string_pretty(&output)?);
-        },
+        }
         "file" => {
             let file_hash = input
                 .file_hash
                 .ok_or_else(|| anyhow::anyhow!("fileHash is required for file tokens"))?;
-            
-            let token = auth.gen_file_token(&file_hash, authorization.clone(), expiration, None, None);
-            
+
+            let doc_id = input
+                .doc_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("docId is required for file tokens"))?;
+
+            let token = auth.gen_file_token(
+                &file_hash,
+                &doc_id,
+                authorization.clone(),
+                expiration,
+                None,
+                None,
+            );
+
             // For files, we don't generate URLs since they are accessed through the file endpoints
             let output = SignOutput {
-                doc_id: None,
+                doc_id: Some(doc_id),
                 file_hash: Some(file_hash),
                 token,
                 authorization,
@@ -211,10 +226,10 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
             };
 
             println!("{}", serde_json::to_string_pretty(&output)?);
-        },
+        }
         _ => unreachable!(), // We already validated token_type above
     }
-    
+
     Ok(())
 }
 
@@ -265,65 +280,82 @@ pub async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> anyhow::Res
         Err(AuthError::InvalidResource) => {
             // This might be a document or file token
             if let Some(id) = id {
-                match auth.verify_doc_token(token, id, current_time) {
-                    Ok(authorization) => {
+                if token_type == "file" {
+                    // Try both file verification methods (by hash and by doc_id)
+                    let file_hash_auth = auth.verify_file_token(token, id, current_time);
+                    let doc_id_auth = auth.verify_file_token_for_doc(token, id, current_time);
+
+                    if let Ok(authorization) = file_hash_auth {
+                        // Successfully verified as file hash
                         let auth_str = match authorization {
                             Authorization::ReadOnly => "read",
                             Authorization::Full => "full",
                         };
-                        
-                        // Determine whether this is a document or file token based on the payload
-                        if token_type == "document" {
-                            VerificationResult {
-                                valid: true,
-                                kind: "document".to_string(),
-                                authorization: Some(auth_str.to_string()),
-                                doc_id: Some(id.to_string()),
-                                file_hash: None,
-                                error: None,
-                            }
-                        } else if token_type == "file" {
-                            VerificationResult {
-                                valid: true,
-                                kind: "file".to_string(),
-                                authorization: Some(auth_str.to_string()),
-                                doc_id: None,
-                                file_hash: Some(id.to_string()),
-                                error: None,
-                            }
-                        } else {
-                            // If we can't determine type, default to document for backward compatibility
-                            VerificationResult {
-                                valid: true,
-                                kind: "unknown".to_string(),
-                                authorization: Some(auth_str.to_string()),
-                                doc_id: Some(id.to_string()),
-                                file_hash: None,
-                                error: None,
-                            }
+
+                        VerificationResult {
+                            valid: true,
+                            kind: "file".to_string(),
+                            authorization: Some(auth_str.to_string()),
+                            doc_id: None,
+                            file_hash: Some(id.to_string()),
+                            error: None,
+                        }
+                    } else if let Ok(authorization) = doc_id_auth {
+                        // Successfully verified as doc_id
+                        let auth_str = match authorization {
+                            Authorization::ReadOnly => "read",
+                            Authorization::Full => "full",
+                        };
+
+                        VerificationResult {
+                            valid: true,
+                            kind: "file".to_string(),
+                            authorization: Some(auth_str.to_string()),
+                            doc_id: Some(id.to_string()),
+                            file_hash: None,
+                            error: None,
+                        }
+                    } else {
+                        // Both verification methods failed
+                        VerificationResult {
+                            valid: false,
+                            kind: "file".to_string(),
+                            authorization: None,
+                            doc_id: None,
+                            file_hash: Some(id.to_string()),
+                            error: Some(
+                                "File token verification failed for both file hash and doc ID"
+                                    .to_string(),
+                            ),
                         }
                     }
-                    Err(e) => {
-                        if token_type == "file" {
+                } else {
+                    // Verify as document token
+                    match auth.verify_doc_token(token, id, current_time) {
+                        Ok(authorization) => {
+                            let auth_str = match authorization {
+                                Authorization::ReadOnly => "read",
+                                Authorization::Full => "full",
+                            };
+
                             VerificationResult {
-                                valid: false,
-                                kind: "file".to_string(),
-                                authorization: None,
-                                doc_id: None,
-                                file_hash: Some(id.to_string()),
-                                error: Some(e.to_string()),
-                            }
-                        } else {
-                            VerificationResult {
-                                valid: false,
+                                valid: true,
                                 kind: "document".to_string(),
-                                authorization: None,
+                                authorization: Some(auth_str.to_string()),
                                 doc_id: Some(id.to_string()),
                                 file_hash: None,
-                                error: Some(e.to_string()),
+                                error: None,
                             }
                         }
-                    },
+                        Err(e) => VerificationResult {
+                            valid: false,
+                            kind: "document".to_string(),
+                            authorization: None,
+                            doc_id: Some(id.to_string()),
+                            file_hash: None,
+                            error: Some(e.to_string()),
+                        },
+                    }
                 }
             } else {
                 VerificationResult {

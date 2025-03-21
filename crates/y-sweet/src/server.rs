@@ -32,8 +32,8 @@ use tracing::{span, Instrument, Level};
 use url::Url;
 use y_sweet_core::{
     api_types::{
-        validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken, DocCreationRequest,
-        FileDownloadUrlResponse, FileUploadUrlResponse, NewDocResponse,
+        validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken,
+        DocCreationRequest, FileDownloadUrlResponse, FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -333,9 +333,9 @@ impl Server {
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
             )
-            // File endpoints
-            .route("/f/:file_hash/upload-url", post(handle_file_upload_url))
-            .route("/f/:file_hash/download-url", get(handle_file_download_url))
+            // File endpoints with doc_id in path
+            .route("/f/:doc_id/upload-url", post(handle_file_upload_url))
+            .route("/f/:doc_id/download-url", get(handle_file_download_url))
             .with_state(self.clone())
     }
 
@@ -395,44 +395,6 @@ impl Server {
             }
         } else {
             Ok(Authorization::Full)
-        }
-    }
-    
-    fn get_file_metadata(
-        &self,
-        token: Option<&str>,
-        file_hash: &str,
-    ) -> Result<(Authorization, Option<String>, Option<u64>), AppError> {
-        if let Some(authenticator) = &self.authenticator {
-            if let Some(token) = token {
-                // First verify that the token is valid for this file
-                let auth = authenticator
-                    .verify_doc_token(token, file_hash, current_time_epoch_millis())
-                    .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
-                    
-                // Then decode the token to get file metadata if available
-                let payload = authenticator.decode_token(token)
-                    .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
-                    
-                if let Permission::File(file_permission) = payload.payload {
-                    if file_permission.file_hash != file_hash {
-                        return Err(AppError(
-                            StatusCode::UNAUTHORIZED,
-                            anyhow!("Token is not valid for requested file"),
-                        ));
-                    }
-                    
-                    Ok((auth, file_permission.content_type, file_permission.content_length))
-                } else {
-                    // It's a valid token but not a file token
-                    Ok((auth, None, None))
-                }
-            } else {
-                Err(AppError(StatusCode::UNAUTHORIZED, anyhow!("No token provided.")))?
-            }
-        } else {
-            // If no authentication key, allow all access without metadata
-            Ok((Authorization::Full, None, None))
         }
     }
 
@@ -799,95 +761,176 @@ fn get_token_from_header(
 
 async fn handle_file_upload_url(
     State(server_state): State<Arc<Server>>,
-    Path(file_hash): Path<String>,
+    Path(doc_id): Path<String>,
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
 ) -> Result<Json<FileUploadUrlResponse>, AppError> {
-    // Validate the file hash format (SHA256)
-    if !validate_file_hash(&file_hash) {
-        return Err(AppError(StatusCode::BAD_REQUEST, anyhow!("Invalid file hash format")));
-    }
-    
     // Get token and extract metadata
     let token = get_token_from_header(auth_header);
-    let (authorization, token_content_type, token_content_length) = 
-        server_state.get_file_metadata(token.as_deref(), &file_hash)?;
-    
-    // Only allow Full permission to upload
-    if !matches!(authorization, Authorization::Full) {
-        return Err(AppError(StatusCode::FORBIDDEN, anyhow!("Insufficient permissions to upload files")));
-    }
-    
-    // Check if we have a store configured
-    if server_state.store.is_none() {
-        return Err(AppError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow!("No store configured for file uploads"),
-        ));
-    }
-    
-    // Use token metadata first, then fall back to request body
-    let content_type = token_content_type.as_deref();
-    let content_length = token_content_length;
-    
-    // Generate the upload URL - files will be stored with "files/" prefix
-    let key = format!("files/{}", file_hash);
-    let upload_url = server_state
-        .store
-        .as_ref()
-        .unwrap()
-        .generate_upload_url(&key, content_type, content_length)
-        .await
-        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-    
-    if let Some(url) = upload_url {
-        Ok(Json(FileUploadUrlResponse { upload_url: url }))
+
+    // Verify that the token is for the requested document and extract file hash from token
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Only allow Full permission to upload
+            if !matches!(auth, Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to upload files"),
+                ));
+            }
+
+            // Decode the token to get the file metadata
+            let payload = authenticator
+                .decode_token(token)
+                .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
+
+            if let Permission::File(file_permission) = payload.payload {
+                let file_hash = file_permission.file_hash;
+
+                // Validate the file hash
+                if !validate_file_hash(&file_hash) {
+                    return Err(AppError(
+                        StatusCode::BAD_REQUEST,
+                        anyhow!("Invalid file hash format in token"),
+                    ));
+                }
+
+                // Check if we have a store configured
+                if server_state.store.is_none() {
+                    return Err(AppError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        anyhow!("No store configured for file uploads"),
+                    ));
+                }
+
+                // Get metadata from token
+                let content_type = file_permission.content_type.as_deref();
+                let content_length = file_permission.content_length;
+
+                // Generate the upload URL - organize files by doc_id/file_hash
+                let key = format!("files/{}/{}", doc_id, file_hash);
+                let upload_url = server_state
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .generate_upload_url(&key, content_type, content_length)
+                    .await
+                    .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+                if let Some(url) = upload_url {
+                    return Ok(Json(FileUploadUrlResponse { upload_url: url }));
+                } else {
+                    return Err(AppError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        anyhow!("Failed to generate upload URL"),
+                    ));
+                }
+            } else {
+                return Err(AppError(
+                    StatusCode::BAD_REQUEST,
+                    anyhow!("Token is not a file token"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
     } else {
-        Err(AppError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow!("Failed to generate upload URL"),
-        ))
+        // No auth configured, anyone can upload
+        return Err(AppError(
+            StatusCode::UNAUTHORIZED,
+            anyhow!("Authentication is required for file operations"),
+        ));
     }
 }
 
 async fn handle_file_download_url(
     State(server_state): State<Arc<Server>>,
-    Path(file_hash): Path<String>,
+    Path(doc_id): Path<String>,
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
 ) -> Result<Json<FileDownloadUrlResponse>, AppError> {
-    // Validate the file hash format (SHA256)
-    if !validate_file_hash(&file_hash) {
-        return Err(AppError(StatusCode::BAD_REQUEST, anyhow!("Invalid file hash format")));
-    }
-    
-    // Verify token - both ReadOnly and Full permissions can download
+    // Get token
     let token = get_token_from_header(auth_header);
-    let _ = server_state.verify_doc_token(token.as_deref(), &file_hash)?;
-    
-    // Check if we have a store configured
-    if server_state.store.is_none() {
-        return Err(AppError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow!("No store configured for file downloads"),
-        ));
-    }
-    
-    // Generate the download URL
-    let key = format!("files/{}", file_hash);
-    let download_url = server_state
-        .store
-        .as_ref()
-        .unwrap()
-        .generate_download_url(&key)
-        .await
-        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-    
-    if let Some(url) = download_url {
-        Ok(Json(FileDownloadUrlResponse { download_url: url }))
+
+    // Verify token is for this doc_id and extract file hash
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Both ReadOnly and Full can download files
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to download file"),
+                ));
+            }
+
+            // Decode the token to get the file hash
+            let payload = authenticator
+                .decode_token(token)
+                .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
+
+            if let Permission::File(file_permission) = payload.payload {
+                let file_hash = file_permission.file_hash;
+
+                // Validate the file hash
+                if !validate_file_hash(&file_hash) {
+                    return Err(AppError(
+                        StatusCode::BAD_REQUEST,
+                        anyhow!("Invalid file hash format in token"),
+                    ));
+                }
+
+                // Check if we have a store configured
+                if server_state.store.is_none() {
+                    return Err(AppError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        anyhow!("No store configured for file downloads"),
+                    ));
+                }
+
+                // Generate the download URL - using doc_id/file_hash path structure
+                let key = format!("files/{}/{}", doc_id, file_hash);
+                let download_url = server_state
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .generate_download_url(&key)
+                    .await
+                    .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+                if let Some(url) = download_url {
+                    return Ok(Json(FileDownloadUrlResponse { download_url: url }));
+                } else {
+                    return Err(AppError(StatusCode::NOT_FOUND, anyhow!("File not found")));
+                }
+            } else {
+                return Err(AppError(
+                    StatusCode::BAD_REQUEST,
+                    anyhow!("Token is not a file token"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
     } else {
-        Err(AppError(
-            StatusCode::NOT_FOUND,
-            anyhow!("File not found"),
-        ))
+        // No auth configured
+        return Err(AppError(
+            StatusCode::UNAUTHORIZED,
+            anyhow!("Authentication is required for file operations"),
+        ));
     }
 }
 
@@ -911,7 +954,6 @@ fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authorizati
 mod test {
     use super::*;
     use y_sweet_core::api_types::Authorization;
-    use y_sweet_core::auth::{Authenticator, ExpirationTimeEpochMillis};
 
     #[tokio::test]
     async fn test_auth_doc() {
@@ -950,43 +992,6 @@ mod test {
         assert!(token.token.is_none());
     }
 
-    #[tokio::test]
-    async fn test_get_file_metadata() {
-        // Create a server with an authenticator
-        let auth = Authenticator::gen_key().unwrap();
-        let server_state = Server::new(
-            None,
-            Duration::from_secs(60),
-            Some(auth.clone()),
-            None,
-            CancellationToken::new(),
-            true,
-        )
-        .await
-        .unwrap();
-        
-        // Create a file token with metadata
-        let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-        let content_type = "application/json";
-        let content_length = 12345;
-        
-        let token = auth.gen_file_token(
-            file_hash,
-            Authorization::Full,
-            ExpirationTimeEpochMillis(current_time_epoch_millis() + 1000),
-            Some(content_type),
-            Some(content_length),
-        );
-        
-        // Test get_file_metadata
-        let (authorization, token_content_type, token_content_length) = 
-            server_state.get_file_metadata(Some(&token), file_hash).unwrap();
-            
-        assert_eq!(authorization, Authorization::Full);
-        assert_eq!(token_content_type, Some(content_type.to_string()));
-        assert_eq!(token_content_length, Some(content_length));
-    }
-    
     #[tokio::test]
     async fn test_auth_doc_with_prefix() {
         let prefix: Url = "https://foo.bar".parse().unwrap();
