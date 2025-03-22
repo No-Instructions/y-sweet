@@ -37,9 +37,9 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
     }
 
     let authorization = match auth_str {
-        "read" => Authorization::ReadOnly,
+        "read" | "read-only" => Authorization::ReadOnly,
         "full" => Authorization::Full,
-        other => anyhow::bail!("Invalid authorization: {}. Must be 'read' or 'full'", other),
+        other => anyhow::bail!("Invalid authorization: {}. Must be 'read', 'read-only', or 'full'", other),
     };
 
     let current_time = SystemTime::now()
@@ -167,19 +167,62 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
         serde_json::Value::String(token.to_string()),
     );
 
-    // First, try to decode the token to determine its type
-    let token_type = match auth.decode_token(token) {
+    // First, try to decode the token to determine its type and extract payload data
+    let token_decode_result = auth.decode_token(token);
+    let token_type = match &token_decode_result {
         Ok(payload) => {
             match &payload.payload {
                 Permission::Server => "server",
-                Permission::Doc(_) => "document",
+                Permission::Doc(doc_permission) => {
+                    // Extract doc_id for the verification section
+                    verification.insert(
+                        "docId".to_string(),
+                        serde_json::Value::String(doc_permission.doc_id.clone()),
+                    );
+                    
+                    // Add authorization
+                    let auth_str = match doc_permission.authorization {
+                        Authorization::ReadOnly => "read-only",
+                        Authorization::Full => "full",
+                    };
+                    verification.insert(
+                        "authorization".to_string(),
+                        serde_json::Value::String(auth_str.to_string()),
+                    );
+                    
+                    // Add expiration if present
+                    if let Some(expiration) = payload.expiration_millis {
+                        verification.insert(
+                            "expiresAt".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(expiration.0)),
+                        );
+                    }
+                    
+                    "document"
+                },
                 Permission::File(file_permission) => {
                     // Extract file hash for the verification section
                     verification.insert(
                         "fileHash".to_string(),
                         serde_json::Value::String(file_permission.file_hash.clone()),
                     );
-
+                    
+                    // Add doc_id
+                    verification.insert(
+                        "docId".to_string(),
+                        serde_json::Value::String(file_permission.doc_id.clone()),
+                    );
+                    
+                    // Add authorization
+                    let auth_str = match file_permission.authorization {
+                        Authorization::ReadOnly => "read-only",
+                        Authorization::Full => "full",
+                    };
+                    verification.insert(
+                        "authorization".to_string(),
+                        serde_json::Value::String(auth_str.to_string()),
+                    );
+                    
                     // Add optional metadata if present
                     if let Some(content_type) = &file_permission.content_type {
                         verification.insert(
@@ -194,12 +237,27 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                             serde_json::Value::Number(serde_json::Number::from(content_length)),
                         );
                     }
+                    
+                    // Add expiration if present
+                    if let Some(expiration) = payload.expiration_millis {
+                        verification.insert(
+                            "expiresAt".to_string(),
+                            serde_json::Value::Number(serde_json::Number::from(expiration.0)),
+                        );
+                    }
 
                     "file"
                 }
             }
         }
-        Err(_) => "unknown",
+        Err(err) => {
+            // Even if token is invalid, add the error for diagnostics
+            verification.insert(
+                "error".to_string(),
+                serde_json::Value::String(format!("Failed to decode token: {}", err)),
+            );
+            "unknown"
+        }
     };
 
     verification.insert(
@@ -214,10 +272,13 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
             }
             Err(e) => {
                 verification.insert("valid".to_string(), serde_json::Value::Bool(false));
-                verification.insert(
-                    "error".to_string(),
-                    serde_json::Value::String(e.to_string()),
-                );
+                // Don't override the original error if we already have one
+                if !verification.contains_key("error") {
+                    verification.insert(
+                        "error".to_string(),
+                        serde_json::Value::String(e.to_string()),
+                    );
+                }
             }
         },
         "document" => {
@@ -225,58 +286,81 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                 match auth.verify_doc_token(token, id, current_time) {
                     Ok(authorization) => {
                         let auth_str = match authorization {
-                            Authorization::ReadOnly => "read",
+                            Authorization::ReadOnly => "read-only",
                             Authorization::Full => "full",
                         };
 
                         verification.insert("valid".to_string(), serde_json::Value::Bool(true));
-                        verification.insert(
-                            "authorization".to_string(),
-                            serde_json::Value::String(auth_str.to_string()),
-                        );
-                        verification.insert(
-                            "docId".to_string(),
-                            serde_json::Value::String(id.to_string()),
-                        );
+                        // Only add if not already there from decoding
+                        if !verification.contains_key("authorization") {
+                            verification.insert(
+                                "authorization".to_string(),
+                                serde_json::Value::String(auth_str.to_string()),
+                            );
+                        }
+                        // Only add if not already there from decoding
+                        if !verification.contains_key("docId") {
+                            verification.insert(
+                                "docId".to_string(),
+                                serde_json::Value::String(id.to_string()),
+                            );
+                        }
                     }
                     Err(e) => {
                         verification.insert("valid".to_string(), serde_json::Value::Bool(false));
+                        // Only add if not already there from decoding
+                        if !verification.contains_key("docId") {
+                            verification.insert(
+                                "docId".to_string(),
+                                serde_json::Value::String(id.to_string()),
+                            );
+                        }
+                        // Don't override the original error if we already have one
+                        if !verification.contains_key("error") {
+                            verification.insert(
+                                "error".to_string(),
+                                serde_json::Value::String(e.to_string()),
+                            );
+                        }
+                        // Add validation errors section
                         verification.insert(
-                            "docId".to_string(),
-                            serde_json::Value::String(id.to_string()),
-                        );
-                        verification.insert(
-                            "error".to_string(),
+                            "validationError".to_string(),
                             serde_json::Value::String(e.to_string()),
                         );
                     }
                 }
             } else {
                 verification.insert("valid".to_string(), serde_json::Value::Bool(false));
-                verification.insert(
-                    "error".to_string(),
-                    serde_json::Value::String(
-                        "No document ID provided for verification".to_string(),
-                    ),
-                );
+                // Don't override the original error if we already have one
+                if !verification.contains_key("error") {
+                    verification.insert(
+                        "error".to_string(),
+                        serde_json::Value::String(
+                            "No document ID provided for verification".to_string(),
+                        ),
+                    );
+                }
             }
         }
         "file" => {
             // For file tokens, we always display the metadata
             // But we only validate if a file hash or doc_id is provided
 
-            // Get the file token details for display
-            if let Ok(payload) = auth.decode_token(token) {
+            // If we have a file_permission, add expected values to help users understand which identifiers to use
+            if let Ok(payload) = &token_decode_result {
                 if let Permission::File(file_permission) = &payload.payload {
-                    // Add expected values to help users understand which identifiers to use
-                    verification.insert(
-                        "expectedFileHash".to_string(),
-                        serde_json::Value::String(file_permission.file_hash.clone()),
-                    );
-                    verification.insert(
-                        "expectedDocId".to_string(),
-                        serde_json::Value::String(file_permission.doc_id.clone()),
-                    );
+                    if !verification.contains_key("expectedFileHash") {
+                        verification.insert(
+                            "expectedFileHash".to_string(),
+                            serde_json::Value::String(file_permission.file_hash.clone()),
+                        );
+                    }
+                    if !verification.contains_key("expectedDocId") {
+                        verification.insert(
+                            "expectedDocId".to_string(),
+                            serde_json::Value::String(file_permission.doc_id.clone()),
+                        );
+                    }
                 }
             }
 
@@ -297,15 +381,18 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
 
                     if let Ok(authorization) = auth_result {
                         let auth_str = match authorization {
-                            Authorization::ReadOnly => "read",
+                            Authorization::ReadOnly => "read-only",
                             Authorization::Full => "full",
                         };
 
                         verification.insert("valid".to_string(), serde_json::Value::Bool(true));
-                        verification.insert(
-                            "authorization".to_string(),
-                            serde_json::Value::String(auth_str.to_string()),
-                        );
+                        // Only add if not already there from decoding
+                        if !verification.contains_key("authorization") {
+                            verification.insert(
+                                "authorization".to_string(),
+                                serde_json::Value::String(auth_str.to_string()),
+                            );
+                        }
 
                         // Note which identifier matched
                         if file_match {
@@ -323,22 +410,36 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                 } else {
                     // Both verification methods failed
                     verification.insert("valid".to_string(), serde_json::Value::Bool(false));
-                    verification.insert("error".to_string(), serde_json::Value::String(
-                        format!("Token verification failed. The provided ID did not match the file hash or document ID in the token.")));
+                    // Don't override the original error if we already have one
+                    if !verification.contains_key("error") {
+                        verification.insert("error".to_string(), serde_json::Value::String(
+                            format!("Token verification failed. The provided ID did not match the file hash or document ID in the token.")));
+                    }
+                    // Add validation errors section
+                    verification.insert(
+                        "validationError".to_string(),
+                        serde_json::Value::String("ID mismatch with token".to_string()),
+                    );
                 }
             } else {
                 // No ID provided
                 verification.insert("valid".to_string(), serde_json::Value::Bool(false));
-                verification.insert("error".to_string(), serde_json::Value::String(
-                    "Token structure is valid but no file hash or doc ID provided for verification".to_string()));
+                // Don't override the original error if we already have one
+                if !verification.contains_key("error") {
+                    verification.insert("error".to_string(), serde_json::Value::String(
+                        "Token structure is valid but no file hash or doc ID provided for verification".to_string()));
+                }
             }
         }
         _ => {
             verification.insert("valid".to_string(), serde_json::Value::Bool(false));
-            verification.insert(
-                "error".to_string(),
-                serde_json::Value::String("Invalid or corrupted token".to_string()),
-            );
+            // Don't override the original error if we already have one
+            if !verification.contains_key("error") {
+                verification.insert(
+                    "error".to_string(),
+                    serde_json::Value::String("Invalid or corrupted token".to_string()),
+                );
+            }
         }
     };
 
