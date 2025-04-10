@@ -11,7 +11,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, head, post},
     Json, Router,
 };
 use axum_extra::typed_header::TypedHeader;
@@ -338,6 +338,7 @@ impl Server {
             .route("/f/:doc_id/upload-url", post(handle_file_upload_url))
             .route("/f/:doc_id/download-url", get(handle_file_download_url))
             .route("/f/:doc_id", delete(handle_file_delete))
+            .route("/f/:doc_id", head(handle_file_head))
             .with_state(self.clone())
     }
 
@@ -1036,6 +1037,100 @@ async fn handle_file_delete(
     }
 }
 
+/// Handle HEAD request to check if a file exists in S3 storage
+/// 
+/// Returns:
+/// - 200 OK if the file exists
+/// - 404 Not Found if the file doesn't exist
+/// - Other status codes for authentication/authorization errors
+async fn handle_file_head(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<StatusCode, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is for this doc_id
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Both ReadOnly and Full can check if a file exists
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to access file"),
+                ));
+            }
+
+            // Decode the token to get the file hash
+            let payload = authenticator
+                .decode_token(token)
+                .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
+
+            if let Permission::File(file_permission) = payload.payload {
+                let file_hash = file_permission.file_hash;
+
+                // Validate the file hash
+                if !validate_file_hash(&file_hash) {
+                    return Err(AppError(
+                        StatusCode::BAD_REQUEST,
+                        anyhow!("Invalid file hash format in token"),
+                    ));
+                }
+
+                // Check if we have a store configured
+                if server_state.store.is_none() {
+                    return Err(AppError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        anyhow!("No store configured for file operations"),
+                    ));
+                }
+
+                // Construct the file path with proper format - using doc_id/file_hash
+                let key = format!("files/{}/{}", doc_id, file_hash);
+                
+                // Check if the file exists with a direct call to S3
+                let exists = server_state
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .exists(&key)
+                    .await
+                    .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+                
+                if exists {
+                    tracing::debug!("File exists: {}/{}", doc_id, file_hash);
+                    return Ok(StatusCode::OK);
+                } else {
+                    tracing::debug!("File not found: {}/{}", doc_id, file_hash);
+                    return Err(AppError(StatusCode::NOT_FOUND, anyhow!("File not found")));
+                }
+            } else {
+                return Err(AppError(
+                    StatusCode::BAD_REQUEST,
+                    anyhow!("Token is not a file token"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    } else {
+        // No auth configured
+        return Err(AppError(
+            StatusCode::UNAUTHORIZED,
+            anyhow!("Authentication is required for file operations"),
+        ));
+    }
+}
+
 #[derive(Deserialize)]
 struct PlaneVerifiedUserData {
     authorization: Authorization,
@@ -1056,6 +1151,7 @@ fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authorizati
 mod test {
     use super::*;
     use y_sweet_core::api_types::Authorization;
+    use y_sweet_core::auth::ExpirationTimeEpochMillis;
 
     #[tokio::test]
     async fn test_auth_doc() {
@@ -1126,5 +1222,128 @@ mod test {
         assert_eq!(token.url, expected_url);
         assert_eq!(token.doc_id, doc_id);
         assert!(token.token.is_none());
+    }
+    
+    #[tokio::test]
+    async fn test_file_head_endpoint() {
+        use std::sync::Arc;
+        use std::collections::HashMap;
+        use y_sweet_core::store::Result as StoreResult;
+        use async_trait::async_trait;
+        
+        // Create a mock store for testing
+        #[derive(Clone)]
+        struct MockStore {
+            files: Arc<HashMap<String, Vec<u8>>>,
+        }
+        
+        #[async_trait]
+        impl Store for MockStore {
+            async fn init(&self) -> StoreResult<()> {
+                Ok(())
+            }
+            
+            async fn get(&self, key: &str) -> StoreResult<Option<Vec<u8>>> {
+                Ok(self.files.get(key).cloned())
+            }
+            
+            async fn set(&self, _key: &str, _value: Vec<u8>) -> StoreResult<()> {
+                Ok(())
+            }
+            
+            async fn remove(&self, _key: &str) -> StoreResult<()> {
+                Ok(())
+            }
+            
+            async fn exists(&self, key: &str) -> StoreResult<bool> {
+                Ok(self.files.contains_key(key))
+            }
+            
+            async fn generate_upload_url(
+                &self,
+                _key: &str,
+                _content_type: Option<&str>,
+                _content_length: Option<u64>,
+            ) -> StoreResult<Option<String>> {
+                Ok(Some("http://mock-upload-url".to_string()))
+            }
+            
+            async fn generate_download_url(&self, _key: &str) -> StoreResult<Option<String>> {
+                Ok(Some("http://mock-download-url".to_string()))
+            }
+        }
+        
+        // Create a mock authenticator
+        let authenticator = y_sweet_core::auth::Authenticator::gen_key().unwrap();
+        let doc_id = "test-doc-123";
+        let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        
+        // Generate a file token
+        let token = authenticator.gen_file_token(
+            file_hash,
+            doc_id,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(u64::MAX), // Never expires for test
+            None,
+            None,
+        );
+        
+        // Set up the mock store with the test file
+        let mut mock_files = HashMap::new();
+        mock_files.insert(format!("files/{}/{}", doc_id, file_hash), vec![1, 2, 3, 4]);
+        
+        let mock_store = MockStore { files: Arc::new(mock_files) };
+        
+        // Create the server with our mock components
+        let server_state = Arc::new(Server::new(
+            Some(Box::new(mock_store)),
+            Duration::from_secs(60),
+            Some(authenticator.clone()),
+            None,
+            CancellationToken::new(),
+            true,
+        )
+        .await
+        .unwrap());
+        
+        // Create auth header with token
+        let headers = TypedHeader(headers::Authorization::bearer(&token).unwrap());
+        
+        // Test the HEAD endpoint - should return 200 OK for existing file
+        let result = handle_file_head(
+            State(server_state.clone()),
+            Path(doc_id.to_string()),
+            Some(headers.clone()),
+        )
+        .await;
+        
+        assert!(result.is_ok(), "HEAD request should succeed for existing file");
+        assert_eq!(result.unwrap(), StatusCode::OK);
+        
+        // Test a file that doesn't exist
+        let nonexistent_file_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let nonexistent_token = authenticator.gen_file_token(
+            nonexistent_file_hash,
+            doc_id,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(u64::MAX),
+            None,
+            None,
+        );
+        
+        let nonexistent_headers = TypedHeader(headers::Authorization::bearer(&nonexistent_token).unwrap());
+        
+        let result = handle_file_head(
+            State(server_state),
+            Path(doc_id.to_string()),
+            Some(nonexistent_headers),
+        )
+        .await;
+        
+        assert!(result.is_err(), "HEAD request should fail for non-existent file");
+        match result {
+            Err(AppError(status, _)) => assert_eq!(status, StatusCode::NOT_FOUND),
+            _ => panic!("Expected NOT_FOUND status for non-existent file"),
+        };
     }
 }
