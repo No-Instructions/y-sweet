@@ -35,3 +35,4 @@ hex = "0.4.3"
 
 [dev-dependencies]
 http = "1.1.0"
+tempfile = "3.8.1"

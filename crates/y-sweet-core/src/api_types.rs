@@ -20,6 +20,24 @@ pub struct FileDownloadUrlResponse {
     pub download_url: String,
 }
 
+#[derive(Serialize)]
+pub struct FileHistoryEntry {
+    /// The file hash identifier
+    pub hash: String,
+    /// File size in bytes
+    pub size: u64,
+    /// Last modified timestamp in milliseconds since epoch
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+}
+
+#[derive(Serialize)]
+pub struct FileHistoryResponse {
+    /// List of files found for the document
+    pub files: Vec<FileHistoryEntry>,
+}
+
+
 /// Validate that the file hash is a valid SHA256 hash (64 hex characters)
 pub fn validate_file_hash(hash: &str) -> bool {
     // SHA256 hash is 64 characters long hex string
