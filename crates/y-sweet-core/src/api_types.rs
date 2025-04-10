@@ -20,6 +20,7 @@ pub struct FileDownloadUrlResponse {
     pub download_url: String,
 }
 
+
 /// Validate that the file hash is a valid SHA256 hash (64 hex characters)
 pub fn validate_file_hash(hash: &str) -> bool {
     // SHA256 hash is 64 characters long hex string
