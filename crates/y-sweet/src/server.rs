@@ -11,7 +11,7 @@ use axum::{
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, head, post},
     Json, Router,
 };
 use axum_extra::typed_header::TypedHeader;
@@ -33,7 +33,8 @@ use url::Url;
 use y_sweet_core::{
     api_types::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken,
-        DocCreationRequest, FileDownloadUrlResponse, FileUploadUrlResponse, NewDocResponse,
+        DocCreationRequest, FileDownloadUrlResponse, FileHistoryEntry, FileHistoryResponse,
+        FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -336,6 +337,10 @@ impl Server {
             // File endpoints with doc_id in path
             .route("/f/:doc_id/upload-url", post(handle_file_upload_url))
             .route("/f/:doc_id/download-url", get(handle_file_download_url))
+            .route("/f/:doc_id/history", get(handle_file_history))
+            .route("/f/:doc_id", delete(handle_file_delete))
+            .route("/f/:doc_id/:hash", delete(handle_file_delete_by_hash))
+            .route("/f/:doc_id", head(handle_file_head))
             .with_state(self.clone())
     }
 
@@ -934,6 +939,343 @@ async fn handle_file_download_url(
     }
 }
 
+/// Delete all files for a document
+///
+/// This endpoint accepts either:
+/// - A file token with the doc_id (hash not required)
+/// - A doc token with the doc_id
+/// - A server token
+///
+/// Returns 204 No Content on success
+async fn handle_file_delete(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<StatusCode, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is for this doc_id and has required permission
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Only Full permission can delete files
+            if !matches!(auth, Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to delete files"),
+                ));
+            }
+
+            // Check if we have a store configured
+            if server_state.store.is_none() {
+                return Err(AppError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!("No store configured for file operations"),
+                ));
+            }
+
+            // List all files in the document's directory
+            let prefix = format!("files/{}/", doc_id);
+            let store = server_state.store.as_ref().unwrap();
+
+            let file_infos = store
+                .list(&prefix)
+                .await
+                .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+            if file_infos.is_empty() {
+                tracing::info!("No files to delete for document: {}", doc_id);
+                return Ok(StatusCode::NO_CONTENT);
+            }
+
+            // Delete each file
+            let mut deleted_count = 0;
+            for file_info in file_infos {
+                let key = file_info.key;
+                if let Err(e) = store.remove(&format!("files/{}/{}", doc_id, key)).await {
+                    tracing::error!("Failed to delete file {}/{}: {}", doc_id, key, e);
+                    continue;
+                }
+                deleted_count += 1;
+            }
+
+            tracing::info!("Deleted {} files for document: {}", deleted_count, doc_id);
+            return Ok(StatusCode::NO_CONTENT);
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    } else {
+        // No auth configured
+        return Err(AppError(
+            StatusCode::UNAUTHORIZED,
+            anyhow!("Authentication is required for file operations"),
+        ));
+    }
+}
+
+/// Delete a specific file by hash
+///
+/// This endpoint accepts either:
+/// - A file token with the doc_id (hash not required)
+/// - A doc token with the doc_id
+/// - A server token
+///
+/// The hash to delete is specified in the URL path.
+/// Returns 204 No Content on success, 404 if file not found
+async fn handle_file_delete_by_hash(
+    State(server_state): State<Arc<Server>>,
+    Path((doc_id, file_hash)): Path<(String, String)>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<StatusCode, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is for this doc_id and has required permission
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Only Full permission can delete files
+            if !matches!(auth, Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to delete file"),
+                ));
+            }
+
+            // Validate the file hash format
+            if !validate_file_hash(&file_hash) {
+                return Err(AppError(
+                    StatusCode::BAD_REQUEST,
+                    anyhow!("Invalid file hash format"),
+                ));
+            }
+
+            // Check if we have a store configured
+            if server_state.store.is_none() {
+                return Err(AppError(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    anyhow!("No store configured for file operations"),
+                ));
+            }
+
+            // Construct the file path
+            let key = format!("files/{}/{}", doc_id, file_hash);
+
+            // Check if the file exists before trying to delete it
+            let exists = server_state
+                .store
+                .as_ref()
+                .unwrap()
+                .exists(&key)
+                .await
+                .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+            if !exists {
+                // If the file is already gone, return 204 No Content since DELETE is idempotent
+                tracing::debug!("File already deleted: {}/{}", doc_id, file_hash);
+                return Ok(StatusCode::NO_CONTENT);
+            }
+
+            // Delete the file
+            server_state
+                .store
+                .as_ref()
+                .unwrap()
+                .remove(&key)
+                .await
+                .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+            tracing::info!("Deleted file: {}/{}", doc_id, file_hash);
+            return Ok(StatusCode::NO_CONTENT);
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    } else {
+        // No auth configured
+        return Err(AppError(
+            StatusCode::UNAUTHORIZED,
+            anyhow!("Authentication is required for file operations"),
+        ));
+    }
+}
+
+/// Handle HEAD request to check if a file exists in S3 storage
+///
+/// Returns:
+/// - 200 OK if the file exists
+/// - 404 Not Found if the file doesn't exist
+/// - Other status codes for authentication/authorization errors
+
+/// Get the history of all files for a document
+///
+/// This endpoint accepts either:
+/// - A file token with the doc_id (hash not required)
+/// - A doc token with the doc_id
+/// - A server token
+async fn handle_file_history(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<FileHistoryResponse>, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is for this doc_id
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id - this now accepts both doc and file tokens
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Both ReadOnly and Full can view file history
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to view file history"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    }
+
+    // Check if we have a store configured
+    if server_state.store.is_none() {
+        return Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("No store configured for file operations"),
+        ));
+    }
+
+    // List files in the document's directory
+    let prefix = format!("files/{}/", doc_id);
+    let store = server_state.store.as_ref().unwrap();
+
+    let file_infos = store
+        .list(&prefix)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+    // Convert the raw file info into the API response format
+    let files = file_infos
+        .into_iter()
+        .map(|info| FileHistoryEntry {
+            hash: info.key,
+            size: info.size,
+            created_at: info.last_modified,
+        })
+        .collect();
+
+    Ok(Json(FileHistoryResponse { files }))
+}
+
+async fn handle_file_head(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<StatusCode, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is for this doc_id
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Both ReadOnly and Full can check if a file exists
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to access file"),
+                ));
+            }
+
+            // Decode the token to get the file hash
+            let payload = authenticator
+                .decode_token(token)
+                .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
+
+            if let Permission::File(file_permission) = payload.payload {
+                let file_hash = file_permission.file_hash;
+
+                // Validate the file hash
+                if !validate_file_hash(&file_hash) {
+                    return Err(AppError(
+                        StatusCode::BAD_REQUEST,
+                        anyhow!("Invalid file hash format in token"),
+                    ));
+                }
+
+                // Check if we have a store configured
+                if server_state.store.is_none() {
+                    return Err(AppError(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        anyhow!("No store configured for file operations"),
+                    ));
+                }
+
+                // Construct the file path with proper format - using doc_id/file_hash
+                let key = format!("files/{}/{}", doc_id, file_hash);
+
+                // Check if the file exists with a direct call to S3
+                let exists = server_state
+                    .store
+                    .as_ref()
+                    .unwrap()
+                    .exists(&key)
+                    .await
+                    .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+                if exists {
+                    tracing::debug!("File exists: {}/{}", doc_id, file_hash);
+                    return Ok(StatusCode::OK);
+                } else {
+                    tracing::debug!("File not found: {}/{}", doc_id, file_hash);
+                    return Err(AppError(StatusCode::NOT_FOUND, anyhow!("File not found")));
+                }
+            } else {
+                return Err(AppError(
+                    StatusCode::BAD_REQUEST,
+                    anyhow!("Token is not a file token"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    } else {
+        // No auth configured
+        return Err(AppError(
+            StatusCode::UNAUTHORIZED,
+            anyhow!("Authentication is required for file operations"),
+        ));
+    }
+}
+
 #[derive(Deserialize)]
 struct PlaneVerifiedUserData {
     authorization: Authorization,
@@ -954,6 +1296,7 @@ fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authorizati
 mod test {
     use super::*;
     use y_sweet_core::api_types::Authorization;
+    use y_sweet_core::auth::ExpirationTimeEpochMillis;
 
     #[tokio::test]
     async fn test_auth_doc() {
@@ -1024,5 +1367,140 @@ mod test {
         assert_eq!(token.url, expected_url);
         assert_eq!(token.doc_id, doc_id);
         assert!(token.token.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_file_head_endpoint() {
+        use async_trait::async_trait;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use y_sweet_core::store::Result as StoreResult;
+
+        // Create a mock store for testing
+        #[derive(Clone)]
+        struct MockStore {
+            files: Arc<HashMap<String, Vec<u8>>>,
+        }
+
+        #[async_trait]
+        impl Store for MockStore {
+            async fn init(&self) -> StoreResult<()> {
+                Ok(())
+            }
+
+            async fn get(&self, key: &str) -> StoreResult<Option<Vec<u8>>> {
+                Ok(self.files.get(key).cloned())
+            }
+
+            async fn set(&self, _key: &str, _value: Vec<u8>) -> StoreResult<()> {
+                Ok(())
+            }
+
+            async fn remove(&self, _key: &str) -> StoreResult<()> {
+                Ok(())
+            }
+
+            async fn exists(&self, key: &str) -> StoreResult<bool> {
+                Ok(self.files.contains_key(key))
+            }
+
+            async fn generate_upload_url(
+                &self,
+                _key: &str,
+                _content_type: Option<&str>,
+                _content_length: Option<u64>,
+            ) -> StoreResult<Option<String>> {
+                Ok(Some("http://mock-upload-url".to_string()))
+            }
+
+            async fn generate_download_url(&self, _key: &str) -> StoreResult<Option<String>> {
+                Ok(Some("http://mock-download-url".to_string()))
+            }
+        }
+
+        // Create a mock authenticator
+        let authenticator = y_sweet_core::auth::Authenticator::gen_key().unwrap();
+        let doc_id = "test-doc-123";
+        let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+
+        // Generate a file token
+        let token = authenticator.gen_file_token(
+            file_hash,
+            doc_id,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(u64::MAX), // Never expires for test
+            None,
+            None,
+        );
+
+        // Set up the mock store with the test file
+        let mut mock_files = HashMap::new();
+        mock_files.insert(format!("files/{}/{}", doc_id, file_hash), vec![1, 2, 3, 4]);
+
+        let mock_store = MockStore {
+            files: Arc::new(mock_files),
+        };
+
+        // Create the server with our mock components
+        let server_state = Arc::new(
+            Server::new(
+                Some(Box::new(mock_store)),
+                Duration::from_secs(60),
+                Some(authenticator.clone()),
+                None,
+                CancellationToken::new(),
+                true,
+            )
+            .await
+            .unwrap(),
+        );
+
+        // Create auth header with token
+        let headers = TypedHeader(headers::Authorization::bearer(&token).unwrap());
+
+        // Test the HEAD endpoint - should return 200 OK for existing file
+        let result = handle_file_head(
+            State(server_state.clone()),
+            Path(doc_id.to_string()),
+            Some(headers.clone()),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "HEAD request should succeed for existing file"
+        );
+        assert_eq!(result.unwrap(), StatusCode::OK);
+
+        // Test a file that doesn't exist
+        let nonexistent_file_hash =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let nonexistent_token = authenticator.gen_file_token(
+            nonexistent_file_hash,
+            doc_id,
+            Authorization::Full,
+            ExpirationTimeEpochMillis(u64::MAX),
+            None,
+            None,
+        );
+
+        let nonexistent_headers =
+            TypedHeader(headers::Authorization::bearer(&nonexistent_token).unwrap());
+
+        let result = handle_file_head(
+            State(server_state),
+            Path(doc_id.to_string()),
+            Some(nonexistent_headers),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "HEAD request should fail for non-existent file"
+        );
+        match result {
+            Err(AppError(status, _)) => assert_eq!(status, StatusCode::NOT_FOUND),
+            _ => panic!("Expected NOT_FOUND status for non-existent file"),
+        };
     }
 }

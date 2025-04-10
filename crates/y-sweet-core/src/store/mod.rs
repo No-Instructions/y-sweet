@@ -1,6 +1,7 @@
 pub mod s3;
 
 use async_trait::async_trait;
+use serde::Serialize;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -18,6 +19,13 @@ pub enum StoreError {
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FileInfo {
+    pub key: String,
+    pub size: u64,
+    pub last_modified: u64, // timestamp in milliseconds
+}
 
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
@@ -44,6 +52,13 @@ pub trait Store: 'static {
     async fn generate_download_url(&self, _key: &str) -> Result<Option<String>> {
         Err(StoreError::UnsupportedOperation(
             "This store does not support generating presigned URLs".to_string(),
+        ))
+    }
+
+    // List files with a common prefix and return their file info (key, size, last_modified)
+    async fn list(&self, _prefix: &str) -> Result<Vec<FileInfo>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support listing files".to_string(),
         ))
     }
 }
@@ -73,6 +88,13 @@ pub trait Store: Send + Sync {
     async fn generate_download_url(&self, _key: &str) -> Result<Option<String>> {
         Err(StoreError::UnsupportedOperation(
             "This store does not support generating presigned URLs".to_string(),
+        ))
+    }
+
+    // List files with a common prefix and return their file info (key, size, last_modified)
+    async fn list(&self, _prefix: &str) -> Result<Vec<FileInfo>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support listing files".to_string(),
         ))
     }
 }
