@@ -443,8 +443,15 @@ impl Authenticator {
                     Err(AuthError::InvalidResource)
                 }
             }
+            Permission::Doc(doc_permission) => {
+                // Allow Doc tokens to perform file operations for their doc_id
+                if doc_permission.doc_id == doc_id {
+                    Ok(doc_permission.authorization)
+                } else {
+                    Err(AuthError::InvalidResource)
+                }
+            }
             Permission::Server => Ok(Authorization::Full), // Server tokens can access any doc
-            _ => Err(AuthError::InvalidResource),
         }
     }
 
