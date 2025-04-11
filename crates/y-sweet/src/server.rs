@@ -33,8 +33,8 @@ use url::Url;
 use y_sweet_core::{
     api_types::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken,
-        DocCreationRequest, FileDownloadUrlResponse, FileUploadUrlResponse, 
-        NewDocResponse,
+        DocCreationRequest, FileDownloadUrlResponse, FileHistoryEntry, FileHistoryResponse,
+        FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -337,6 +337,7 @@ impl Server {
             // File endpoints with doc_id in path
             .route("/f/:doc_id/upload-url", post(handle_file_upload_url))
             .route("/f/:doc_id/download-url", get(handle_file_download_url))
+            .route("/f/:doc_id/history", get(handle_file_history))
             .route("/f/:doc_id", delete(handle_file_delete))
             .route("/f/:doc_id", head(handle_file_head))
             .with_state(self.clone())
@@ -1043,6 +1044,67 @@ async fn handle_file_delete(
 /// - 200 OK if the file exists
 /// - 404 Not Found if the file doesn't exist
 /// - Other status codes for authentication/authorization errors
+async fn handle_file_history(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<FileHistoryResponse>, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is for this doc_id
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify token is for this doc_id
+            let auth = authenticator
+                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            // Both ReadOnly and Full can view file history
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to view file history"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    }
+
+    // Check if we have a store configured
+    if server_state.store.is_none() {
+        return Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("No store configured for file operations"),
+        ));
+    }
+
+    // List files in the document's directory
+    let prefix = format!("files/{}/", doc_id);
+    let store = server_state.store.as_ref().unwrap();
+    
+    let file_infos = store
+        .list(&prefix)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+    
+    // Convert the raw file info into the API response format
+    let files = file_infos
+        .into_iter()
+        .map(|info| FileHistoryEntry {
+            hash: info.key,
+            size: info.size,
+            created_at: info.last_modified,
+        })
+        .collect();
+    
+    Ok(Json(FileHistoryResponse { files }))
+}
+
 async fn handle_file_head(
     State(server_state): State<Arc<Server>>,
     Path(doc_id): Path<String>,
