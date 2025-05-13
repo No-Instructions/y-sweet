@@ -42,7 +42,10 @@ pub fn router(
         .post_async("/doc/:doc_id/auth", auth_doc_handler)
         .get_async("/doc/:doc_id/as-update", as_update_handler)
         .post_async("/doc/:doc_id/update", update_handler)
-        .get_async("/doc/ws/:doc_id", forward_to_durable_object))
+        .get_async("/doc/ws/:doc_id", forward_to_durable_object)
+        .get_async("/d/:doc_id/as-update", as_update_handler)
+        .post_async("/d/:doc_id/update", update_handler)
+        .get_async("/d/:did/ws/:doc_id", forward_to_durable_object))
 }
 
 #[cfg(feature = "fetch-event")]
