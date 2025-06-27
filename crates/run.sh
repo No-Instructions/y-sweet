@@ -18,9 +18,15 @@ echo "💾 Persisting data to $Y_SWEET_STORE"
 
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     echo "🔑 Joining tailnet..."
-    tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
+    if [ -n "$TAILSCALE_USERSPACE_NETWORKING" ]; then
+        tailscaled --tun=userspace-networking --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
+    else
+        tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
+    fi
     tailscale up --auth-key=${TAILSCALE_AUTHKEY} --hostname=relay-server
+    echo "🛰️  Starting Relay Server..."
+    exec y-sweet serve --host=0.0.0.0 --prod
+else
+    echo "🛰️  Starting Relay Server..."
+    exec y-sweet serve --host=0.0.0.0 --prod
 fi
-
-echo "🛰️  Starting Relay Server..."
-exec y-sweet serve --host=0.0.0.0 --prod
