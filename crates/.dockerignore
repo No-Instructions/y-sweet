@@ -1,3 +1,2 @@
 target
-.auth.env
-.auth.staging.env
+.auth*.env
