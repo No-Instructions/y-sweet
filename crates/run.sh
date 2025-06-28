@@ -24,9 +24,9 @@ if [ -n "$TAILSCALE_AUTHKEY" ]; then
         tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
     fi
     tailscale up --auth-key=${TAILSCALE_AUTHKEY} --hostname=relay-server
-    echo "🛰️  Starting Relay Server..."
-    exec y-sweet serve --host=0.0.0.0 --prod
-else
-    echo "🛰️  Starting Relay Server..."
-    exec y-sweet serve --host=0.0.0.0 --prod
+    if [ -n "$TAILSCALE_SERVE" ]; then
+        tailscale serve --bg localhost:8080
+    fi
 fi
+echo "🛰️  Starting Relay Server..."
+exec y-sweet serve --host=0.0.0.0 --prod
