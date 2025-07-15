@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: relay-tailscale
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_TAILSCALED_EXTRA_ARGS=--tun=tailscale1
+      - TS_STATE_DIR=/var/lib/tailscale
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    restart: unless-stopped
+    ports:
+      - 8080:8080 # relay-server
+
+  relay-server:
+    image: docker.system3.md/relay-server:latest
+    container_name: relay-server
+    network_mode: 'service:tailscale'
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    restart: unless-stopped
+
+volumes:
+  tailscale-state:
