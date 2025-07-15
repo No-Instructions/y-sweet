@@ -1,4 +1,4 @@
-use crate::{doc_connection::DOC_NAME, store::Store, sync::awareness::Awareness, sync_kv::SyncKv};
+use crate::{doc_connection::DOC_NAME, store::Store, sync::awareness::Awareness, sync_kv::SyncKv, webhook::WebhookCallback};
 use anyhow::{anyhow, Context, Result};
 use std::sync::{Arc, RwLock};
 use yrs::{updates::decoder::Decode, Doc, ReadTxn, StateVector, Subscription, Transact, Update};
@@ -24,6 +24,7 @@ impl DocWithSyncKv {
         key: &str,
         store: Option<Arc<Box<dyn Store>>>,
         dirty_callback: F,
+        webhook_callback: Option<WebhookCallback>,
     ) -> Result<Self>
     where
         F: Fn() + Send + Sync + 'static,
@@ -44,11 +45,18 @@ impl DocWithSyncKv {
 
         let subscription = {
             let sync_kv = sync_kv.clone();
+            let webhook_callback = webhook_callback.clone();
+            let doc_key = key.to_string();
             doc.observe_update_v1(move |_, event| {
                 sync_kv.push_update(DOC_NAME, &event.update).unwrap();
                 sync_kv
                     .flush_doc_with(DOC_NAME, Default::default())
                     .unwrap();
+                
+                // Trigger webhook if callback is configured
+                if let Some(ref callback) = webhook_callback {
+                    callback(doc_key.clone());
+                }
             })
             .map_err(|_| anyhow!("Failed to subscribe to updates"))?
         };
