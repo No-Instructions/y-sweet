@@ -25,6 +25,8 @@ use y_sweet_core::{
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+
+
 #[derive(Parser)]
 struct Opts {
     #[clap(subcommand)]
@@ -165,6 +167,7 @@ async fn main() -> Result<()> {
             }
 
             let token = CancellationToken::new();
+            let webhook_dispatcher = y_sweet::webhook::create_webhook_dispatcher();
 
             let server = y_sweet::server::Server::new(
                 store,
@@ -173,8 +176,14 @@ async fn main() -> Result<()> {
                 url_prefix.clone(),
                 token.clone(),
                 true,
+                webhook_dispatcher,
             )
             .await?;
+
+            // Try to load webhook config from store on startup
+            if let Err(e) = server.reload_webhook_config().await {
+                tracing::warn!("Failed to load webhook config from store: {}", e);
+            }
 
             let prod = *prod;
             let handle = tokio::spawn(async move {
@@ -277,6 +286,7 @@ async fn main() -> Result<()> {
             };
 
             let cancellation_token = CancellationToken::new();
+            let webhook_dispatcher = y_sweet::webhook::create_webhook_dispatcher();
             let server = y_sweet::server::Server::new(
                 store,
                 std::time::Duration::from_secs(*checkpoint_freq_seconds),
@@ -284,8 +294,14 @@ async fn main() -> Result<()> {
                 None, // No URL prefix
                 cancellation_token.clone(),
                 false,
+                webhook_dispatcher,
             )
             .await?;
+
+            // Try to load webhook config from store on startup
+            if let Err(e) = server.reload_webhook_config().await {
+                tracing::warn!("Failed to load webhook config from store: {}", e);
+            }
 
             // Load the one document we're operating with
             server

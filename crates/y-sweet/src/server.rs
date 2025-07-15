@@ -42,6 +42,7 @@ use y_sweet_core::{
     store::Store,
     sync::awareness::Awareness,
     sync_kv::SyncKv,
+    webhook::{WebhookDispatcher, create_webhook_callback},
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
@@ -87,6 +88,7 @@ pub struct Server {
     /// Whether to garbage collect docs that are no longer in use.
     /// Disabled for single-doc mode, since we only have one doc.
     doc_gc: bool,
+    webhook_dispatcher: Arc<RwLock<Option<Arc<WebhookDispatcher>>>>,
 }
 
 impl Server {
@@ -97,6 +99,7 @@ impl Server {
         url_prefix: Option<Url>,
         cancellation_token: CancellationToken,
         doc_gc: bool,
+        webhook_dispatcher: Option<WebhookDispatcher>,
     ) -> Result<Self> {
         Ok(Self {
             docs: Arc::new(DashMap::new()),
@@ -107,10 +110,15 @@ impl Server {
             url_prefix,
             cancellation_token,
             doc_gc,
+            webhook_dispatcher: Arc::new(RwLock::new(webhook_dispatcher.map(Arc::new))),
         })
     }
 
     pub async fn doc_exists(&self, doc_id: &str) -> bool {
+        // Reject system keys
+        if Self::validate_doc_id(doc_id).is_err() {
+            return false;
+        }
         if self.docs.contains_key(doc_id) {
             return true;
         }
@@ -131,12 +139,75 @@ impl Server {
         Ok(doc_id)
     }
 
+    pub async fn reload_webhook_config(&self) -> Result<String, anyhow::Error> {
+        use y_sweet_core::webhook::WebhookDispatcher;
+        
+        // Try to load new configuration from store
+        let new_dispatcher = WebhookDispatcher::from_store(self.store.clone()).await
+            .map_err(|e| anyhow::anyhow!("Failed to load webhook config from store: {}", e))?;
+        
+        // If no store config found, try environment variable fallback
+        let (new_dispatcher, config_source) = if new_dispatcher.is_none() {
+            if let Some(env_dispatcher) = crate::webhook::create_webhook_dispatcher() {
+                (Some(env_dispatcher), "environment variable")
+            } else {
+                (None, "none")
+            }
+        } else {
+            (new_dispatcher, "store")
+        };
+        
+        // Update webhook dispatcher with write lock
+        {
+            let mut dispatcher_guard = self.webhook_dispatcher.write().unwrap();
+            
+            // Gracefully shutdown old dispatcher if it exists
+            if let Some(old_dispatcher) = dispatcher_guard.as_ref() {
+                old_dispatcher.shutdown();
+            }
+            
+            *dispatcher_guard = new_dispatcher.map(Arc::new);
+        }
+        
+        // Return status message and log configuration details
+        let status = match &*self.webhook_dispatcher.read().unwrap() {
+            Some(dispatcher) => {
+                // Print configuration details
+                for config in &dispatcher.configs {
+                    tracing::info!("Webhook config: prefix='{}' -> url='{}' (timeout: {}ms)", 
+                          config.prefix, config.url, config.timeout_ms);
+                }
+                format!("Webhook configuration loaded from {} with {} configs", config_source, dispatcher.configs.len())
+            }
+            None => format!("Webhook configuration loaded from {} - webhooks disabled", config_source),
+        };
+        
+        tracing::info!("{}", status);
+        Ok(status)
+    }
+
+    fn validate_doc_id(doc_id: &str) -> Result<()> {
+        // Reject system configuration paths that are reserved for internal use
+        if doc_id.starts_with(".config/") || doc_id == ".config" {
+            return Err(anyhow::anyhow!("Document ID cannot access system configuration directory '.config'"));
+        }
+        Ok(())
+    }
+
     pub async fn load_doc(&self, doc_id: &str) -> Result<()> {
+        Self::validate_doc_id(doc_id)?;
         let (send, recv) = channel(1024);
+
+        let webhook_callback = {
+            let dispatcher_guard = self.webhook_dispatcher.read().unwrap();
+            dispatcher_guard.as_ref().map(|dispatcher| {
+                create_webhook_callback(dispatcher.clone())
+            })
+        };
 
         let dwskv = DocWithSyncKv::new(doc_id, self.store.clone(), move || {
             send.try_send(()).unwrap();
-        })
+        }, webhook_callback)
         .await?;
 
         dwskv
@@ -351,6 +422,7 @@ impl Server {
             .route("/f/:doc_id", delete(handle_file_delete))
             .route("/f/:doc_id/:hash", delete(handle_file_delete_by_hash))
             .route("/f/:doc_id", head(handle_file_head))
+            .route("/webhook/reload", post(reload_webhook_config_endpoint))
             .with_state(self.clone())
     }
 
@@ -1303,6 +1375,44 @@ fn get_authorization_from_plane_header(headers: HeaderMap) -> Result<Authorizati
     }
 }
 
+async fn reload_webhook_config_endpoint(
+    State(server_state): State<Arc<Server>>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<Value>, AppError> {
+    // Get token
+    let token = get_token_from_header(auth_header);
+
+    // Verify token is server token (for server admin operations)
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            // Verify this is a server admin token
+            authenticator
+                .verify_server_token(token, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    }
+
+    // Reload webhook configuration
+    match server_state.reload_webhook_config().await {
+        Ok(status) => Ok(Json(json!({
+            "status": "success",
+            "message": status
+        }))),
+        Err(e) => {
+            tracing::error!("Failed to reload webhook config: {}", e);
+            Err(AppError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                anyhow!("Failed to reload webhook configuration: {}", e),
+            ))
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1318,6 +1428,7 @@ mod test {
             None,
             CancellationToken::new(),
             true,
+            None,
         )
         .await
         .unwrap();
@@ -1356,6 +1467,7 @@ mod test {
             Some(prefix),
             CancellationToken::new(),
             true,
+            None,
         )
         .await
         .unwrap();
@@ -1458,6 +1570,7 @@ mod test {
             None,
             CancellationToken::new(),
             true,
+            None,
         )
         .await
         .unwrap());
