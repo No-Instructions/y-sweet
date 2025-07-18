@@ -22,9 +22,9 @@ docker exec minio-mc mc \
 docker exec minio-mc mc \
   mb mycloud/ysweet-testing-y-sweet-data
 
-export Y_SWEET_S3_BUCKET_PREFIX=testing
-export Y_SWEET_S3_BUCKET_NAME=ysweet-testing-y-sweet-data
-export Y_SWEET_MINIO_PORT=9000
+export RELAY_SERVER_S3_BUCKET_PREFIX=testing
+export RELAY_SERVER_S3_BUCKET_NAME=ysweet-testing-y-sweet-data
+export RELAY_SERVER_MINIO_PORT=9000
 
 npm test
 
