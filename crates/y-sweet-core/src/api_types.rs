@@ -37,6 +37,21 @@ pub struct FileHistoryResponse {
     pub files: Vec<FileHistoryEntry>,
 }
 
+#[derive(Serialize)]
+pub struct DocumentVersionEntry {
+    #[serde(rename = "versionId")]
+    pub version_id: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    #[serde(rename = "isLatest")]
+    pub is_latest: bool,
+}
+
+#[derive(Serialize)]
+pub struct DocumentVersionResponse {
+    pub versions: Vec<DocumentVersionEntry>,
+}
+
 /// Validate that the file hash is a valid SHA256 hash (64 hex characters)
 pub fn validate_file_hash(hash: &str) -> bool {
     // SHA256 hash is 64 characters long hex string

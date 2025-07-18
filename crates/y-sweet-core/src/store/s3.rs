@@ -1,7 +1,8 @@
-use super::{FileInfo, Result, StoreError};
+use super::{FileInfo, Result, StoreError, VersionInfo};
 use crate::store::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
+use jiff::Timestamp;
 use reqwest::{Client, Method, Response, StatusCode, Url};
 use rusty_s3::{Bucket, Credentials, S3Action};
 use serde::{Deserialize, Serialize};
@@ -188,7 +189,7 @@ impl S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
@@ -200,7 +201,7 @@ impl S3Store {
         action: A,
         body: Option<Vec<u8>>,
     ) -> Result<Response> {
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         let mut request = self.client.request(method, url);
 
         request = if let Some(body) = body {
@@ -501,6 +502,72 @@ impl Store for S3Store {
         Ok(files)
     }
 
+    async fn list_versions(&self, key: &str) -> Result<Vec<VersionInfo>> {
+        self.init().await?;
+
+        let prefixed_key = if let Some(prefix) = &self.prefix {
+            if prefix.ends_with('/') {
+                format!("{}{}", prefix, key)
+            } else {
+                format!("{}/{}", prefix, key)
+            }
+        } else {
+            key.to_string()
+        };
+
+        let mut action = self.bucket.list_object_versions(Some(&self.credentials));
+        action.with_prefix(&prefixed_key);
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
+
+        let response = self
+            .client
+            .request(Method::GET, url)
+            .send()
+            .await
+            .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(StoreError::ConnectionError(format!(
+                "Failed to list object versions: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
+
+        let parsed =
+            rusty_s3::actions::ListObjectVersions::parse_response(&bytes).map_err(|e| {
+                StoreError::ConnectionError(format!(
+                    "Error parsing S3 list versions response: {}",
+                    e
+                ))
+            })?;
+
+        let versions = parsed
+            .versions
+            .into_iter()
+            .filter(|v| v.key == prefixed_key)
+            .map(|v| {
+                let ts = OffsetDateTime::parse(
+                    &v.last_modified,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map(|dt| dt.unix_timestamp_nanos() as u64 / 1_000_000)
+                .unwrap_or(0);
+                VersionInfo {
+                    version_id: v.version_id,
+                    last_modified: ts,
+                    is_latest: v.is_latest,
+                }
+            })
+            .collect();
+
+        Ok(versions)
+    }
+
     async fn generate_upload_url(
         &self,
         key: &str,
@@ -542,7 +609,7 @@ impl Store for S3Store {
         }
 
         // Sign the URL with time
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         tracing::debug!("Generated upload URL: {}", url);
 
         Ok(Some(url.to_string()))
@@ -570,7 +637,7 @@ impl Store for S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
@@ -1015,7 +1082,7 @@ impl Store for S3Store {
         }
 
         // Sign the URL with time
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         tracing::debug!("Generated upload URL: {}", url);
 
         Ok(Some(url.to_string()))
@@ -1043,7 +1110,7 @@ impl Store for S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))

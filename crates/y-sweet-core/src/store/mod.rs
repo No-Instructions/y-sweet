@@ -27,6 +27,13 @@ pub struct FileInfo {
     pub last_modified: u64, // timestamp in milliseconds
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct VersionInfo {
+    pub version_id: String,
+    pub last_modified: u64,
+    pub is_latest: bool,
+}
+
 #[cfg(target_arch = "wasm32")]
 #[async_trait(?Send)]
 pub trait Store: 'static {
@@ -59,6 +66,12 @@ pub trait Store: 'static {
     async fn list(&self, _prefix: &str) -> Result<Vec<FileInfo>> {
         Err(StoreError::UnsupportedOperation(
             "This store does not support listing files".to_string(),
+        ))
+    }
+
+    async fn list_versions(&self, _key: &str) -> Result<Vec<VersionInfo>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support listing versions".to_string(),
         ))
     }
 }
@@ -95,6 +108,12 @@ pub trait Store: Send + Sync {
     async fn list(&self, _prefix: &str) -> Result<Vec<FileInfo>> {
         Err(StoreError::UnsupportedOperation(
             "This store does not support listing files".to_string(),
+        ))
+    }
+
+    async fn list_versions(&self, _key: &str) -> Result<Vec<VersionInfo>> {
+        Err(StoreError::UnsupportedOperation(
+            "This store does not support listing versions".to_string(),
         ))
     }
 }

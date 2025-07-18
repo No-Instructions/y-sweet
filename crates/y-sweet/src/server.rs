@@ -33,8 +33,8 @@ use url::Url;
 use y_sweet_core::{
     api_types::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken,
-        DocCreationRequest, FileDownloadUrlResponse, FileHistoryEntry, FileHistoryResponse,
-        FileUploadUrlResponse, NewDocResponse,
+        DocCreationRequest, DocumentVersionEntry, DocumentVersionResponse, FileDownloadUrlResponse,
+        FileHistoryEntry, FileHistoryResponse, FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -430,6 +430,7 @@ impl Server {
             .route("/doc/:doc_id/update", post(update_doc_deprecated))
             .route("/d/:doc_id/as-update", get(get_doc_as_update))
             .route("/d/:doc_id/update", post(update_doc))
+            .route("/d/:doc_id/versions", get(handle_doc_versions))
             .route(
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
@@ -1288,6 +1289,61 @@ async fn handle_file_history(
         .collect();
 
     Ok(Json(FileHistoryResponse { files }))
+}
+
+async fn handle_doc_versions(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<DocumentVersionResponse>, AppError> {
+    let token = get_token_from_header(auth_header);
+
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            let auth = authenticator
+                .verify_doc_token(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to view document versions"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    }
+
+    let store = match &server_state.store {
+        Some(s) => s,
+        None => {
+            return Err(AppError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                anyhow!("No store configured for operations"),
+            ))
+        }
+    };
+
+    let key = format!("{}/data.ysweet", doc_id);
+    let versions = store
+        .list_versions(&key)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+    let entries = versions
+        .into_iter()
+        .map(|v| DocumentVersionEntry {
+            version_id: v.version_id,
+            created_at: v.last_modified,
+            is_latest: v.is_latest,
+        })
+        .collect();
+
+    Ok(Json(DocumentVersionResponse { versions: entries }))
 }
 
 async fn handle_file_head(
