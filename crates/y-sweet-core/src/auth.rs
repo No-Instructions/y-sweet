@@ -1,6 +1,9 @@
 use crate::api_types::Authorization;
 use bincode::Options;
+use ciborium::{de::from_reader, ser::into_writer};
+use coset::{iana, CborSerializable, CoseSign1, CoseSign1Builder, HeaderBuilder};
 use data_encoding::Encoding;
+use ed25519_dalek::{Keypair, PublicKey, SecretKey, Signature, Signer, Verifier};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,6 +25,29 @@ impl ExpirationTimeEpochMillis {
     pub fn max() -> Self {
         Self(u64::MAX)
     }
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct CwtClaims {
+    #[serde(skip_serializing_if = "Option::is_none", rename = "1")]
+    iss: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "4")]
+    exp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "6")]
+    iat: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none", rename = "100")]
+    kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "101")]
+    doc_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "102")]
+    file_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "103")]
+    authorization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "104")]
+    content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "105")]
+    content_length: Option<u64>,
 }
 
 /// This is a custom base64 encoder that is equivalent to BASE64URL_NOPAD for encoding,
@@ -145,6 +171,80 @@ fn b64_decode(input: &str) -> Result<Vec<u8>, AuthError> {
         .map_err(|_| AuthError::InvalidToken)
 }
 
+fn ed25519_keypair(secret: &[u8]) -> Keypair {
+    let seed = Sha256::digest(secret);
+    let sk = SecretKey::from_bytes(&seed[..32]).expect("32 bytes");
+    let pk: PublicKey = (&sk).into();
+    Keypair {
+        secret: sk,
+        public: pk,
+    }
+}
+
+fn payload_to_claims(payload: &Payload) -> CwtClaims {
+    let mut claims = CwtClaims::default();
+    claims.iss = Some("y-sweet".to_string());
+    if let Some(exp) = payload.expiration_millis {
+        claims.exp = Some(exp.0 / 1000);
+    }
+    match &payload.payload {
+        Permission::Server => {
+            claims.kind = Some("server".into());
+        }
+        Permission::Doc(doc) => {
+            claims.kind = Some("doc".into());
+            claims.doc_id = Some(doc.doc_id.clone());
+            claims.authorization = Some(match doc.authorization {
+                Authorization::ReadOnly => "read".into(),
+                Authorization::Full => "full".into(),
+            });
+        }
+        Permission::File(f) => {
+            claims.kind = Some("file".into());
+            claims.file_hash = Some(f.file_hash.clone());
+            claims.doc_id = Some(f.doc_id.clone());
+            claims.authorization = Some(match f.authorization {
+                Authorization::ReadOnly => "read".into(),
+                Authorization::Full => "full".into(),
+            });
+            claims.content_type = f.content_type.clone();
+            claims.content_length = f.content_length;
+        }
+    }
+    claims
+}
+
+fn claims_to_payload(claims: CwtClaims) -> Result<Payload, AuthError> {
+    let expiration = claims.exp.map(|e| ExpirationTimeEpochMillis(e * 1000));
+    let perm = match claims.kind.as_deref() {
+        Some("server") => Permission::Server,
+        Some("doc") => Permission::Doc(DocPermission {
+            doc_id: claims.doc_id.ok_or(AuthError::InvalidToken)?,
+            authorization: match claims.authorization.as_deref() {
+                Some("read") => Authorization::ReadOnly,
+                Some("full") => Authorization::Full,
+                _ => return Err(AuthError::InvalidToken),
+            },
+        }),
+        Some("file") => Permission::File(FilePermission {
+            file_hash: claims.file_hash.ok_or(AuthError::InvalidToken)?,
+            doc_id: claims.doc_id.ok_or(AuthError::InvalidToken)?,
+            authorization: match claims.authorization.as_deref() {
+                Some("read") => Authorization::ReadOnly,
+                Some("full") => Authorization::Full,
+                _ => return Err(AuthError::InvalidToken),
+            },
+            content_type: claims.content_type,
+            content_length: claims.content_length,
+        }),
+        _ => return Err(AuthError::InvalidToken),
+    };
+    Ok(Payload {
+        payload: perm,
+        expiration_millis: expiration,
+    })
+}
+
 mod b64 {
     use super::*;
     use serde::{de, Deserialize, Deserializer, Serializer};
@@ -247,6 +347,10 @@ impl Authenticator {
         self.sign(Payload::new(Permission::Server))
     }
 
+    pub fn server_token_cwt(&self) -> String {
+        self.sign_cwt(Payload::new(Permission::Server))
+    }
+
     fn sign(&self, payload: Payload) -> String {
         let mut hash_payload =
             bincode_encode(&payload).expect("Bincode serialization should not fail.");
@@ -265,6 +369,29 @@ impl Authenticator {
         }
     }
 
+    fn sign_cwt(&self, payload: Payload) -> String {
+        let claims = payload_to_claims(&payload);
+        let mut buf = Vec::new();
+        into_writer(&claims, &mut buf).expect("cbor encoding");
+        let protected = HeaderBuilder::new()
+            .algorithm(iana::Algorithm::EdDSA)
+            .key_id(self.key_id.as_deref().unwrap_or("").as_bytes().to_vec())
+            .build();
+        let kp = ed25519_keypair(&self.private_key);
+        let sign1 = CoseSign1Builder::new()
+            .protected(protected)
+            .payload(buf)
+            .create_signature(&[], |m| kp.sign(m).to_bytes().to_vec())
+            .build();
+        let cose_bytes = sign1.to_vec().expect("cbor");
+        let token = b64_encode(&cose_bytes);
+        if let Some(kid) = &self.key_id {
+            format!("{}.{}", kid, token)
+        } else {
+            token
+        }
+    }
+
     fn verify(&self, token: &str, current_time: u64) -> Result<Payload, AuthError> {
         let token = if let Some((prefix, token)) = token.split_once('.') {
             if Some(prefix) != self.key_id.as_deref() {
@@ -279,6 +406,11 @@ impl Authenticator {
 
             token
         };
+
+        // Try new CWT format first
+        if let Ok(payload) = self.verify_cwt_token(token, current_time) {
+            return Ok(payload);
+        }
 
         let auth_req: AuthenticatedRequest =
             bincode_decode(&b64_decode(token)?).or(Err(AuthError::InvalidToken))?;
@@ -302,6 +434,27 @@ impl Authenticator {
         } else {
             Ok(auth_req.payload)
         }
+    }
+
+    fn verify_cwt_token(&self, token: &str, current_time: u64) -> Result<Payload, AuthError> {
+        let data = b64_decode(token)?;
+        let cose: CoseSign1 = CoseSign1::from_slice(&data).map_err(|_| AuthError::InvalidToken)?;
+        let payload = cose.payload.clone().ok_or(AuthError::InvalidToken)?;
+        let kp = ed25519_keypair(&self.private_key);
+        cose.verify_signature(&[], |sig, tbs| {
+            let sig = Signature::from_bytes(sig).map_err(|_| AuthError::InvalidSignature)?;
+            kp.public
+                .verify(tbs, &sig)
+                .map_err(|_| AuthError::InvalidSignature)
+        })?;
+        let claims: CwtClaims =
+            from_reader(payload.as_slice()).map_err(|_| AuthError::InvalidToken)?;
+        if let Some(exp) = claims.exp {
+            if exp * 1000 < current_time {
+                return Err(AuthError::Expired);
+            }
+        }
+        claims_to_payload(claims)
     }
 
     pub fn with_key_id(self, key_id: KeyId) -> Self {
@@ -346,6 +499,22 @@ impl Authenticator {
         self.sign(payload)
     }
 
+    pub fn gen_doc_token_cwt(
+        &self,
+        doc_id: &str,
+        authorization: Authorization,
+        expiration_time: ExpirationTimeEpochMillis,
+    ) -> String {
+        let payload = Payload::new_with_expiration(
+            Permission::Doc(DocPermission {
+                doc_id: doc_id.to_string(),
+                authorization,
+            }),
+            expiration_time,
+        );
+        self.sign_cwt(payload)
+    }
+
     pub fn gen_file_token(
         &self,
         file_hash: &str,
@@ -366,6 +535,28 @@ impl Authenticator {
             expiration_time,
         );
         self.sign(payload)
+    }
+
+    pub fn gen_file_token_cwt(
+        &self,
+        file_hash: &str,
+        doc_id: &str,
+        authorization: Authorization,
+        expiration_time: ExpirationTimeEpochMillis,
+        content_type: Option<&str>,
+        content_length: Option<u64>,
+    ) -> String {
+        let payload = Payload::new_with_expiration(
+            Permission::File(FilePermission {
+                file_hash: file_hash.to_string(),
+                doc_id: doc_id.to_string(),
+                authorization,
+                content_type: content_type.map(|s| s.to_string()),
+                content_length,
+            }),
+            expiration_time,
+        );
+        self.sign_cwt(payload)
     }
 
     fn verify_token(
@@ -485,6 +676,9 @@ impl Authenticator {
         } else {
             token
         };
+        if let Ok(payload) = self.verify_cwt_token(token, 0) {
+            return Ok(payload);
+        }
 
         let auth_req: AuthenticatedRequest =
             bincode_decode(&b64_decode(token)?).or(Err(AuthError::InvalidToken))?;

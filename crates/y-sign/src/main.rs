@@ -8,7 +8,7 @@ use y_sweet_core::{
     store::{s3::S3Config, s3::S3Store, Store},
 };
 
-async fn sign_stdin(auth: &Authenticator) -> Result<()> {
+async fn sign_stdin(auth: &Authenticator, cwt: bool) -> Result<()> {
     let mut stdin = tokio::io::stdin();
     let mut buffer = String::new();
     stdin.read_to_string(&mut buffer).await?;
@@ -39,7 +39,10 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
     let authorization = match auth_str {
         "read" | "read-only" => Authorization::ReadOnly,
         "full" => Authorization::Full,
-        other => anyhow::bail!("Invalid authorization: {}. Must be 'read', 'read-only', or 'full'", other),
+        other => anyhow::bail!(
+            "Invalid authorization: {}. Must be 'read', 'read-only', or 'full'",
+            other
+        ),
     };
 
     let current_time = SystemTime::now()
@@ -57,7 +60,11 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
             let doc_id =
                 doc_id.ok_or_else(|| anyhow::anyhow!("docId is required for document tokens"))?;
 
-            let token = auth.gen_doc_token(doc_id, authorization, expiration);
+            let token = if cwt {
+                auth.gen_doc_token_cwt(doc_id, authorization, expiration)
+            } else {
+                auth.gen_doc_token(doc_id, authorization, expiration)
+            };
 
             output.insert(
                 "docId".to_string(),
@@ -85,14 +92,25 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
             let doc_id =
                 doc_id.ok_or_else(|| anyhow::anyhow!("docId is required for file tokens"))?;
 
-            let token = auth.gen_file_token(
-                file_hash,
-                doc_id,
-                authorization,
-                expiration,
-                content_type,
-                content_length,
-            );
+            let token = if cwt {
+                auth.gen_file_token_cwt(
+                    file_hash,
+                    doc_id,
+                    authorization,
+                    expiration,
+                    content_type,
+                    content_length,
+                )
+            } else {
+                auth.gen_file_token(
+                    file_hash,
+                    doc_id,
+                    authorization,
+                    expiration,
+                    content_type,
+                    content_length,
+                )
+            };
 
             output.insert(
                 "fileHash".to_string(),
@@ -134,15 +152,19 @@ async fn sign_stdin(auth: &Authenticator) -> Result<()> {
         "server" => {
             // For server tokens, we don't need doc_id or file_hash
             // We also don't use the authorization parameter since server tokens always have full access
-            
-            let token = auth.server_token();
+
+            let token = if cwt {
+                auth.server_token_cwt()
+            } else {
+                auth.server_token()
+            };
 
             output.insert("token".to_string(), serde_json::Value::String(token));
             output.insert(
                 "type".to_string(),
                 serde_json::Value::String("server".to_string()),
             );
-            
+
             // Server tokens always have full authorization
             output.insert(
                 "authorization".to_string(),
@@ -188,14 +210,14 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                         serde_json::Value::String("full".to_string()),
                     );
                     "server"
-                },
+                }
                 Permission::Doc(doc_permission) => {
                     // Extract doc_id for the verification section
                     verification.insert(
                         "docId".to_string(),
                         serde_json::Value::String(doc_permission.doc_id.clone()),
                     );
-                    
+
                     // Add authorization
                     let auth_str = match doc_permission.authorization {
                         Authorization::ReadOnly => "read-only",
@@ -205,7 +227,7 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                         "authorization".to_string(),
                         serde_json::Value::String(auth_str.to_string()),
                     );
-                    
+
                     // Add expiration if present
                     if let Some(expiration) = payload.expiration_millis {
                         verification.insert(
@@ -213,22 +235,22 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                             serde_json::Value::Number(serde_json::Number::from(expiration.0)),
                         );
                     }
-                    
+
                     "document"
-                },
+                }
                 Permission::File(file_permission) => {
                     // Extract file hash for the verification section
                     verification.insert(
                         "fileHash".to_string(),
                         serde_json::Value::String(file_permission.file_hash.clone()),
                     );
-                    
+
                     // Add doc_id
                     verification.insert(
                         "docId".to_string(),
                         serde_json::Value::String(file_permission.doc_id.clone()),
                     );
-                    
+
                     // Add authorization
                     let auth_str = match file_permission.authorization {
                         Authorization::ReadOnly => "read-only",
@@ -238,7 +260,7 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                         "authorization".to_string(),
                         serde_json::Value::String(auth_str.to_string()),
                     );
-                    
+
                     // Add optional metadata if present
                     if let Some(content_type) = &file_permission.content_type {
                         verification.insert(
@@ -253,7 +275,7 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                             serde_json::Value::Number(serde_json::Number::from(content_length)),
                         );
                     }
-                    
+
                     // Add expiration if present
                     if let Some(expiration) = payload.expiration_millis {
                         verification.insert(
@@ -289,7 +311,7 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
             match auth.verify_server_token(token, current_time) {
                 Ok(()) => {
                     verification.insert("valid".to_string(), serde_json::Value::Bool(true));
-                    
+
                     // If a doc_id was provided, show that server tokens can access it
                     if let Some(doc_id) = id {
                         verification.insert(
@@ -298,7 +320,9 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                         );
                         verification.insert(
                             "docAccess".to_string(),
-                            serde_json::Value::String("full (server tokens can access all documents)".to_string()),
+                            serde_json::Value::String(
+                                "full (server tokens can access all documents)".to_string(),
+                            ),
                         );
                     }
                 }
@@ -313,7 +337,7 @@ async fn verify_stdin(auth: &Authenticator, id: Option<&str>) -> Result<()> {
                     }
                 }
             }
-        },
+        }
         "document" => {
             if let Some(id) = id {
                 match auth.verify_doc_token(token, id, current_time) {
@@ -610,6 +634,10 @@ enum SignSubcommand {
         /// The authentication key for signing tokens
         #[clap(long, env = "RELAY_SERVER_AUTH")]
         auth: String,
+
+        /// Use the new CWT token format
+        #[clap(long)]
+        cwt: bool,
     },
 
     /// Verify a token for a document or file
@@ -660,9 +688,9 @@ async fn main() -> Result<()> {
     // No need for complex logging setup in this simple tool
 
     match &opts.subcmd {
-        SignSubcommand::Sign { auth } => {
+        SignSubcommand::Sign { auth, cwt } => {
             let authenticator = Authenticator::new(auth)?;
-            sign_stdin(&authenticator).await?;
+            sign_stdin(&authenticator, *cwt).await?;
         }
         SignSubcommand::Verify {
             auth,
@@ -729,37 +757,40 @@ mod tests {
     #[tokio::test]
     async fn test_server_token_generation() {
         let authenticator = Authenticator::new("dGVzdGtleXRlc3RrZXk=").unwrap();
-        
+
         // Generate a server token
         let token = authenticator.server_token();
-        
+
         // Create a mock context that simulates the sign_stdin and verify_stdin functions
         // without actually redirecting stdin/stdout
-        
+
         // Verify the token and expected output for sign_stdin
         let sign_result = {
             // Create the expected JSON output
             let mut json_output = serde_json::Map::new();
-            json_output.insert("token".to_string(), serde_json::Value::String(token.clone()));
             json_output.insert(
-                "type".to_string(), 
-                serde_json::Value::String("server".to_string())
+                "token".to_string(),
+                serde_json::Value::String(token.clone()),
+            );
+            json_output.insert(
+                "type".to_string(),
+                serde_json::Value::String("server".to_string()),
             );
             json_output.insert(
                 "authorization".to_string(),
                 serde_json::Value::String("full".to_string()),
             );
-            
+
             serde_json::Value::Object(json_output).to_string()
         };
-        
+
         // Verify the token and expected output for verify_stdin
         let verify_result = {
             // Create the verification JSON output
             let mut json_output = serde_json::Map::new();
             let mut token_info = serde_json::Map::new();
             token_info.insert("raw".to_string(), serde_json::Value::String(token.clone()));
-            
+
             let mut verification = serde_json::Map::new();
             verification.insert(
                 "kind".to_string(),
@@ -770,7 +801,7 @@ mod tests {
                 "authorization".to_string(),
                 serde_json::Value::String("full".to_string()),
             );
-            
+
             // Simulate verifying with a doc_id
             let doc_id = "test-doc-123";
             verification.insert(
@@ -779,23 +810,25 @@ mod tests {
             );
             verification.insert(
                 "docAccess".to_string(),
-                serde_json::Value::String("full (server tokens can access all documents)".to_string()),
+                serde_json::Value::String(
+                    "full (server tokens can access all documents)".to_string(),
+                ),
             );
-            
+
             json_output.insert("token".to_string(), serde_json::Value::Object(token_info));
             json_output.insert(
                 "verification".to_string(),
                 serde_json::Value::Object(verification),
             );
-            
+
             serde_json::Value::Object(json_output).to_string()
         };
-        
+
         // Assertions on the expected JSON output for sign_stdin
         assert!(sign_result.contains("\"type\":\"server\""));
         assert!(sign_result.contains("\"authorization\":\"full\""));
         assert!(sign_result.contains(&format!("\"token\":\"{}\"", token)));
-        
+
         // Assertions on the expected JSON output for verify_stdin
         assert!(verify_result.contains("\"valid\":true"));
         assert!(verify_result.contains("\"kind\":\"server\""));
