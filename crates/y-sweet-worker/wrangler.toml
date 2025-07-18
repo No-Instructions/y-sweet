@@ -13,7 +13,7 @@ tag = "v1"
 new_classes = ["YServe"]
 
 [[r2_buckets]]
-binding = "RELAY_DATA"
+binding = "RELAY_SERVER_DATA"
 bucket_name = "y-sweet-data"
 preview_bucket_name = "y-sweet-data-dev"
 
@@ -31,7 +31,7 @@ bindings = [
 ]
 
 [[env.staging.r2_buckets]]
-binding = "RELAY_DATA"
+binding = "RELAY_SERVER_DATA"
 bucket_name = "y-sweet-data-staging"
 preview_bucket_name = "y-sweet-data-dev"
 
@@ -44,6 +44,6 @@ bindings = [
 ]
 
 [[env.test.r2_buckets]]
-binding = "RELAY_DATA"
+binding = "RELAY_SERVER_DATA"
 bucket_name = "y-sweet-data-staging"
 preview_bucket_name = "y-sweet-data-dev"

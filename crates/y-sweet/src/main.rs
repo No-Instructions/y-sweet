@@ -34,20 +34,20 @@ struct Opts {
 #[derive(Subcommand)]
 enum ServSubcommand {
     Serve {
-        #[clap(env = "RELAY_STORAGE")]
+        #[clap(env = "RELAY_SERVER_STORAGE")]
         store: Option<String>,
 
         #[clap(long, default_value = "8080", env = "PORT")]
         port: u16,
-        #[clap(long, env = "RELAY_HOST")]
+        #[clap(long, env = "RELAY_SERVER_HOST")]
         host: Option<IpAddr>,
-        #[clap(long, default_value = "10", env = "RELAY_CHECKPOINT_FREQ_SECONDS")]
+        #[clap(long, default_value = "10", env = "RELAY_SERVER_CHECKPOINT_FREQ_SECONDS")]
         checkpoint_freq_seconds: u64,
 
-        #[clap(long, env = "RELAY_AUTH")]
+        #[clap(long, env = "RELAY_SERVER_AUTH")]
         auth: Option<String>,
 
-        #[clap(long, env = "RELAY_URL_PREFIX")]
+        #[clap(long, env = "RELAY_SERVER_URL")]
         url_prefix: Option<Url>,
 
         #[clap(long)]
@@ -63,7 +63,7 @@ enum ServSubcommand {
     /// The YDoc update should be passed in via stdin.
     ConvertFromUpdate {
         /// The store to write the document to.
-        #[clap(env = "RELAY_STORAGE")]
+        #[clap(env = "RELAY_SERVER_STORAGE")]
         store: String,
 
         /// The ID of the document to write.
@@ -76,20 +76,20 @@ enum ServSubcommand {
         #[clap(long, default_value = "8080", env = "PORT")]
         port: u16,
 
-        #[clap(long, env = "RELAY_HOST")]
+        #[clap(long, env = "RELAY_SERVER_HOST")]
         host: Option<IpAddr>,
 
-        #[clap(long, default_value = "10", env = "RELAY_CHECKPOINT_FREQ_SECONDS")]
+        #[clap(long, default_value = "10", env = "RELAY_SERVER_CHECKPOINT_FREQ_SECONDS")]
         checkpoint_freq_seconds: u64,
     },
 
     Sign {
-        #[clap(long, env = "RELAY_AUTH")]
+        #[clap(long, env = "RELAY_SERVER_AUTH")]
         auth: String,
     },
 
     Verify {
-        #[clap(long, env = "RELAY_AUTH")]
+        #[clap(long, env = "RELAY_SERVER_AUTH")]
         auth: String,
 
         #[clap(long)]
@@ -102,8 +102,8 @@ enum ServSubcommand {
 
 fn get_store_from_opts(store_path: &str) -> Result<Box<dyn Store>> {
     if store_path.starts_with("s3://") {
-        // Set the RELAY_STORAGE environment variable so S3Config::from_env can use it
-        env::set_var("RELAY_STORAGE", store_path);
+        // Set the RELAY_SERVER_STORAGE environment variable so S3Config::from_env can use it
+        env::set_var("RELAY_SERVER_STORAGE", store_path);
 
         // Use the unified S3Config::from_env method
         let config = S3Config::from_env(None, None)?;

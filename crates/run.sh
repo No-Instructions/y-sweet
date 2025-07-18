@@ -14,21 +14,21 @@ use_legacy_var() {
     fi
 }
 
-use_legacy_var RELAY_URL_PREFIX Y_SWEET_URL_PREFIX
-use_legacy_var RELAY_STORAGE Y_SWEET_STORE
+use_legacy_var RELAY_SERVER_URL Y_SWEET_URL_PREFIX
+use_legacy_var RELAY_SERVER_STORAGE Y_SWEET_STORE
 
-# If RELAY_URL_PREFIX is not set but FLY_APP_NAME is, construct the URL
-if [ -z "$RELAY_URL_PREFIX" ] && [ -n "$FLY_APP_NAME" ]; then
-    export RELAY_URL_PREFIX="https://$FLY_APP_NAME.fly.dev"
-    echo "🪽  Running on fly.io. Setting --url-prefix=$RELAY_URL_PREFIX"
+# If RELAY_SERVER_URL is not set but FLY_APP_NAME is, construct the URL
+if [ -z "$RELAY_SERVER_URL" ] && [ -n "$FLY_APP_NAME" ]; then
+    export RELAY_SERVER_URL="https://$FLY_APP_NAME.fly.dev"
+    echo "🪽  Running on fly.io. Setting --url-prefix=$RELAY_SERVER_URL"
 fi
 
-# RELAY_STORAGE is required
-if [ -z "$RELAY_STORAGE" ]; then
-    echo "RELAY_STORAGE environment variable is required" >&2
+# RELAY_SERVER_STORAGE is required
+if [ -z "$RELAY_SERVER_STORAGE" ]; then
+    echo "RELAY_SERVER_STORAGE environment variable is required" >&2
     exit 1
 fi
-echo "💾 Persisting data to $RELAY_STORAGE"
+echo "💾 Persisting data to $RELAY_SERVER_STORAGE"
 
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     echo "🔑 Joining tailnet..."

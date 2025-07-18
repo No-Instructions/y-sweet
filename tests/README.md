@@ -16,8 +16,8 @@ The test currently builds and tests three versions of the server:
 If _ALL FIVE_ of the following env vars are set, tests
 with S3 as the storage backend will also be run.
 
-- RELAY_S3_ACCESS_KEY_ID
-- RELAY_S3_SECRET_KEY
-- RELAY_S3_REGION
-- RELAY_S3_BUCKET_PREFIX
-- RELAY_S3_BUCKET_NAME
+- RELAY_SERVER_S3_ACCESS_KEY_ID
+- RELAY_SERVER_S3_SECRET_KEY
+- RELAY_SERVER_S3_REGION
+- RELAY_SERVER_S3_BUCKET_PREFIX
+- RELAY_SERVER_S3_BUCKET_NAME

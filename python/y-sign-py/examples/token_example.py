@@ -13,7 +13,7 @@ def main():
     Demonstrate basic usage of the y_sign module with native Python bindings.
     """
     # Get the auth key from environment variable or use a default for demo
-    auth_key = os.environ.get("RELAY_AUTH", "replace_with_your_auth_key")
+    auth_key = os.environ.get("RELAY_SERVER_AUTH", "replace_with_your_auth_key")
     
     try:
         # Initialize the token generator

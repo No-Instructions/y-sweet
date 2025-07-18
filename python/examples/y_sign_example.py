@@ -13,7 +13,7 @@ def main():
     Demonstrate basic usage of the y_sign module.
     """
     # Get the auth key from environment variable or use a default for demo
-    auth_key = os.environ.get("RELAY_AUTH", "replace_with_your_auth_key")
+    auth_key = os.environ.get("RELAY_SERVER_AUTH", "replace_with_your_auth_key")
     
     # You can specify a custom path to the y-sign binary if needed
     # binary_path = "/path/to/y-sign"
