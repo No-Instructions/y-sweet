@@ -16,3 +16,6 @@ opt-level = 'z'  # Optimize for size
 lto = true       # Enable Link Time Optimization
 codegen-units = 1 # Further size optimization
 strip = true     # Strip symbols
+
+[patch.crates-io]
+rusty-s3 = { git = "https://github.com/dtkav/rusty-s3", rev = "08044491d1378c728e7e7985ea2f3cd90524fc06" }

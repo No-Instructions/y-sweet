@@ -19,3 +19,6 @@ y-sweet-core = { version = "0.8.1", path = "../y-sweet-core" }
 
 [dev-dependencies]
 tempfile = "3.5.0"
+
+[patch.crates-io]
+rusty-s3 = { git = "https://github.com/dtkav/rusty-s3", rev = "08044491d1378c728e7e7985ea2f3cd90524fc06" }
