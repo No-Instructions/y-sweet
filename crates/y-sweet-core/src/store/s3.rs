@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::OnceLock;
 use std::time::Duration;
-use time::OffsetDateTime;
+use jiff::Timestamp;
 use url::Url as UrlParser;
 
 const S3_ACCESS_KEY_ID: &str = "AWS_ACCESS_KEY_ID";
@@ -188,7 +188,7 @@ impl S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
@@ -200,7 +200,7 @@ impl S3Store {
         action: A,
         body: Option<Vec<u8>>,
     ) -> Result<Response> {
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         let mut request = self.client.request(method, url);
 
         request = if let Some(body) = body {
@@ -535,7 +535,7 @@ impl Store for S3Store {
         }
 
         // Sign the URL with time
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         tracing::debug!("Generated upload URL: {}", url);
 
         Ok(Some(url.to_string()))
@@ -566,7 +566,7 @@ impl Store for S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
@@ -1000,7 +1000,7 @@ impl Store for S3Store {
         }
 
         // Sign the URL with time
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         tracing::debug!("Generated upload URL: {}", url);
 
         Ok(Some(url.to_string()))
@@ -1031,7 +1031,7 @@ impl Store for S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
