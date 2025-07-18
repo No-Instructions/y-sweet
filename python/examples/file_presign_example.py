@@ -31,17 +31,17 @@ def main():
     Demonstrate file presign functionality of the y_sign module.
     """
     # Get the auth key from environment variable
-    auth_key = os.environ.get("Y_SWEET_AUTH")
+    auth_key = os.environ.get("RELAY_SERVER_AUTH")
     if not auth_key:
-        print("Error: Y_SWEET_AUTH environment variable is required.", file=sys.stderr)
+        print("Error: RELAY_SERVER_AUTH environment variable is required.", file=sys.stderr)
         return 1
     
     # Check if S3 environment variables are set
     if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
         print("Warning: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY should be set for S3 operations.")
     
-    if not os.environ.get("STORAGE_BUCKET") and not os.environ.get("Y_SWEET_STORE"):
-        print("Warning: STORAGE_BUCKET or Y_SWEET_STORE should be set for S3 operations.")
+    if not os.environ.get("STORAGE_BUCKET") and not os.environ.get("RELAY_SERVER_STORAGE"):
+        print("Warning: STORAGE_BUCKET or RELAY_SERVER_STORAGE should be set for S3 operations.")
     
     try:
         # Initialize the token generator

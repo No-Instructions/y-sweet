@@ -9,22 +9,22 @@ This script demonstrates how to:
 4. Verify the upload was successful
 
 Required environment variables:
-- Y_SWEET_AUTH - Authentication key for y-sweet
+- RELAY_SERVER_AUTH - Authentication key for y-sweet
 - AWS_ACCESS_KEY_ID - S3 access key ID
 - AWS_SECRET_ACCESS_KEY - S3 secret access key
 - STORAGE_BUCKET - S3 bucket name (replaces AWS_S3_BUCKET)
 - AWS_REGION - S3 region (optional, defaults to us-east-1)
 - AWS_ENDPOINT_URL - S3 endpoint URL (optional)
-- Y_SWEET_STORE - Storage URL with optional prefix path (optional)
+- RELAY_SERVER_STORAGE - Storage URL with optional prefix path (optional)
 
 Usage:
-    export Y_SWEET_AUTH="your-auth-key"
+    export RELAY_SERVER_AUTH="your-auth-key"
     export AWS_ACCESS_KEY_ID="your-access-key"
     export AWS_SECRET_ACCESS_KEY="your-secret-key"
     export STORAGE_BUCKET="your-bucket"
     export AWS_REGION="your-region"  # Optional
     export AWS_ENDPOINT_URL="your-endpoint"  # Optional
-    export Y_SWEET_STORE="s3://your-bucket/optional-prefix"  # Optional
+    export RELAY_SERVER_STORAGE="s3://your-bucket/optional-prefix"  # Optional
     ./test_presign.py
 """
 
@@ -62,7 +62,7 @@ def redact_url(url):
 def print_env_vars():
     """Print relevant environment variables (with secrets redacted)."""
     env_vars = {
-        "Y_SWEET_AUTH": "REDACTED" if "Y_SWEET_AUTH" in os.environ else "Not set",
+        "RELAY_SERVER_AUTH": "REDACTED" if "RELAY_SERVER_AUTH" in os.environ else "Not set",
         "AWS_ACCESS_KEY_ID": "REDACTED" if "AWS_ACCESS_KEY_ID" in os.environ else "Not set",
         "AWS_SECRET_ACCESS_KEY": "REDACTED" if "AWS_SECRET_ACCESS_KEY" in os.environ else "Not set",
         "STORAGE_BUCKET": os.environ.get("STORAGE_BUCKET", "Not set"),
@@ -72,7 +72,7 @@ def print_env_vars():
         "AWS_SESSION_TOKEN": "REDACTED" if "AWS_SESSION_TOKEN" in os.environ else "Not set",
         "AWS_S3_BUCKET_PREFIX": os.environ.get("AWS_S3_BUCKET_PREFIX", "Not set"),
         "AWS_S3_USE_PATH_STYLE": os.environ.get("AWS_S3_USE_PATH_STYLE", "Not set"),
-        "Y_SWEET_STORE": os.environ.get("Y_SWEET_STORE", "Not set"),
+        "RELAY_SERVER_STORAGE": os.environ.get("RELAY_SERVER_STORAGE", "Not set"),
     }
     
     log("Environment variables:")
@@ -212,10 +212,10 @@ def main():
     log("Starting test_presign.py script")
     print_env_vars()
     
-    # Check if Y_SWEET_STORE is set and has a prefix
-    y_sweet_store = os.environ.get("Y_SWEET_STORE", "")
+    # Check if RELAY_SERVER_STORAGE is set and has a prefix
+    y_sweet_store = os.environ.get("RELAY_SERVER_STORAGE", "")
     if y_sweet_store:
-        log(f"Y_SWEET_STORE is set to: {y_sweet_store}")
+        log(f"RELAY_SERVER_STORAGE is set to: {y_sweet_store}")
         # Parse the URL to extract prefix
         try:
             # Parse s3:// URL format
@@ -225,7 +225,7 @@ def main():
                 prefix = parts[1] if len(parts) > 1 else ""
                 log(f"Extracted bucket: {bucket}, prefix: {prefix}")
                 
-                # IMPORTANT: Y-SIGN USES AWS_S3_BUCKET_PREFIX NOT Y_SWEET_STORE
+                # IMPORTANT: Y-SIGN USES AWS_S3_BUCKET_PREFIX NOT RELAY_SERVER_STORAGE
                 # Need to set AWS_S3_BUCKET_PREFIX for y-sign to use the prefix
                 if prefix:
                     os.environ["AWS_S3_BUCKET_PREFIX"] = prefix
@@ -237,7 +237,7 @@ def main():
                         log(f"WARNING: Your prefix ends with a slash, which may cause double slashes in URLs: '{prefix}'", "WARNING")
                         log(f"This can result in the pattern '{prefix}/files/' becoming '{prefix}//files/' in paths")
         except Exception as e:
-            log(f"Error parsing Y_SWEET_STORE: {str(e)}", "ERROR")
+            log(f"Error parsing RELAY_SERVER_STORAGE: {str(e)}", "ERROR")
     
     # Create a test file
     test_content = "Hello, world! This is a test file."
@@ -256,7 +256,7 @@ def main():
     
     log("Step 1: Generating file token")
     token_result = run_y_sign(
-        ["sign", "--auth", os.environ.get("Y_SWEET_AUTH", "")], 
+        ["sign", "--auth", os.environ.get("RELAY_SERVER_AUTH", "")],
         token_data,
         "token generation"
     )
@@ -270,7 +270,7 @@ def main():
     # Step 2: Generate a presigned upload URL using the token
     log("Step 2: Generating presigned upload URL")
     upload_result = run_y_sign(
-        ["presign", "upload-url", "--auth", os.environ.get("Y_SWEET_AUTH", "")], 
+        ["presign", "upload-url", "--auth", os.environ.get("RELAY_SERVER_AUTH", "")],
         token,
         "upload URL generation"
     )
@@ -302,7 +302,7 @@ def main():
         else:
             log(f"  {key}: {values[0]}", "DEBUG")
     
-    # Check if the URL path contains the expected prefix if Y_SWEET_STORE was set with a prefix
+    # Check if the URL path contains the expected prefix if RELAY_SERVER_STORAGE was set with a prefix
     path_match = True
     if y_sweet_store and '/' in y_sweet_store[5:]:
         _, prefix = y_sweet_store[5:].split('/', 1)
@@ -320,7 +320,7 @@ def main():
             log(f"- Expected pattern: {expected_pattern}", "DEBUG")
             log(f"- File hash: {file_hash}", "DEBUG")
             log(f"- Complete URL (redacted): {redact_url(upload_url)}", "DEBUG")
-            log(f"- Environment - Y_SWEET_STORE: {y_sweet_store}", "DEBUG")
+            log(f"- Environment - RELAY_SERVER_STORAGE: {y_sweet_store}", "DEBUG")
             
             # Proceed with the actual check
             if expected_pattern in url_parts.path:
@@ -330,12 +330,12 @@ def main():
                 # Also check if the path has "files/" without the prefix - this is still wrong
                 if "/files/" in url_parts.path or f"/{file_hash}" in url_parts.path:
                     log(f"ERROR: URL contains 'files/' but missing prefix '{prefix}'. Path: {url_parts.path}", "ERROR")
-                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check Y_SWEET_STORE setting.", "ERROR")
+                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check RELAY_SERVER_STORAGE setting.", "ERROR")
                     # Continue execution for debug purpose instead of exiting
                     path_match = False  # Mark as failed but continue for debugging
                 else:
                     log(f"ERROR: URL does not contain expected prefix path '{expected_pattern}' in: {url_parts.path}", "ERROR")
-                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check Y_SWEET_STORE setting.", "ERROR")
+                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check RELAY_SERVER_STORAGE setting.", "ERROR")
                     # Continue execution for debug purpose instead of exiting
                     path_match = False  # Mark as failed but continue for debugging
     
@@ -435,7 +435,7 @@ def main():
     # Step 4: Generate a download URL for verification
     log("Step 4: Generating presigned download URL")
     download_result = run_y_sign(
-        ["presign", "download-url", "--auth", os.environ.get("Y_SWEET_AUTH", "")], 
+        ["presign", "download-url", "--auth", os.environ.get("RELAY_SERVER_AUTH", "")],
         token,
         "download URL generation"
     )
@@ -474,12 +474,12 @@ def main():
                 # Also check if the path has "files/" without the prefix - this is still wrong
                 if "/files/" in download_url_parts.path or f"/{file_hash}" in download_url_parts.path:
                     log(f"ERROR: Download URL contains 'files/' but missing prefix '{prefix}'. Path: {download_url_parts.path}", "ERROR")
-                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check Y_SWEET_STORE setting.", "ERROR")
+                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check RELAY_SERVER_STORAGE setting.", "ERROR")
                     # Continue execution for debug purpose instead of exiting
                     path_match = False  # Mark as failed but continue for debugging
                 else:
                     log(f"ERROR: Download URL does not contain expected prefix path '{expected_pattern}' in: {download_url_parts.path}", "ERROR")
-                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check Y_SWEET_STORE setting.", "ERROR")
+                    log(f"The bucket prefix '{prefix}' is not being correctly applied to the URL. Check RELAY_SERVER_STORAGE setting.", "ERROR")
                     # Continue execution for debug purpose instead of exiting
                     path_match = False  # Mark as failed but continue for debugging
     

@@ -3,9 +3,9 @@ import os
 import json
 
 # Get the auth key from environment
-auth_key = os.environ.get("Y_SWEET_AUTH")
+auth_key = os.environ.get("RELAY_SERVER_AUTH")
 if not auth_key:
-    print("Please set Y_SWEET_AUTH environment variable")
+    print("Please set RELAY_SERVER_AUTH environment variable")
     exit(1)
 
 print(f"Testing y_sign module with auth key: {auth_key}")

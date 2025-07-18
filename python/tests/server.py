@@ -26,7 +26,7 @@ class Server:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=BASE_DIR,
-            env={"Y_SWEET_LOG_JSON": "true", **environ},
+            env={"RELAY_SERVER_LOG_JSON": "true", **environ},
             text=True,
             bufsize=1,
         )
