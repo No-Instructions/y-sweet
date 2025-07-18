@@ -608,14 +608,14 @@ enum SignSubcommand {
     /// Generate a token for a document or file
     Sign {
         /// The authentication key for signing tokens
-        #[clap(long, env = "Y_SWEET_AUTH")]
+        #[clap(long, env = "RELAY_AUTH")]
         auth: String,
     },
 
     /// Verify a token for a document or file
     Verify {
         /// The authentication key for verifying tokens
-        #[clap(long, env = "Y_SWEET_AUTH")]
+        #[clap(long, env = "RELAY_AUTH")]
         auth: String,
 
         /// The document ID to verify against
@@ -633,7 +633,7 @@ enum SignSubcommand {
         action: String,
 
         /// Optional S3 store URL (s3://bucket/path format)
-        #[clap(long, env = "Y_SWEET_STORE")]
+        #[clap(long, env = "RELAY_STORE")]
         store: Option<String>,
 
         /// Optional AWS endpoint URL override
@@ -645,7 +645,7 @@ enum SignSubcommand {
         path_style: bool,
 
         /// The authentication key for validating tokens
-        #[clap(long, env = "Y_SWEET_AUTH")]
+        #[clap(long, env = "RELAY_AUTH")]
         auth: Option<String>,
     },
 
@@ -683,7 +683,7 @@ async fn main() -> Result<()> {
         } => {
             // If store is provided via CLI arg, set it as an environment variable
             if let Some(store_url) = store {
-                std::env::set_var("Y_SWEET_STORE", store_url);
+                std::env::set_var("RELAY_STORE", store_url);
             }
 
             // Use the unified S3Config::from_env method
@@ -702,8 +702,8 @@ async fn main() -> Result<()> {
             // Get auth key from command line argument or environment
             let auth_key = match auth {
                 Some(key) => key.clone(),
-                None => std::env::var("Y_SWEET_AUTH").map_err(|_| {
-                    anyhow::anyhow!("Y_SWEET_AUTH environment variable is required")
+                None => std::env::var("RELAY_AUTH").map_err(|_| {
+                    anyhow::anyhow!("RELAY_AUTH environment variable is required")
                 })?,
             };
             let authenticator = Authenticator::new(&auth_key)?;

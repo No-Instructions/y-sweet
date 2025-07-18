@@ -1,10 +1,16 @@
 #!/bin/bash
 set -e  # Exit on error
 
-# If Y_SWEET_URL_PREFIX is not set but FLY_APP_NAME is, construct the URL
-if [ -z "$Y_SWEET_URL_PREFIX" ] && [ -n "$FLY_APP_NAME" ]; then
-    export Y_SWEET_URL_PREFIX="https://$FLY_APP_NAME.fly.dev"
-    echo "🪽  Running on fly.io. Setting --url-prefix=$Y_SWEET_URL_PREFIX"
+# Backwards compatibility for deprecated Y_SWEET_ variables
+if [ -z "$RELAY_URL_PREFIX" ] && [ -n "$Y_SWEET_URL_PREFIX" ]; then
+    echo "⚠️  Y_SWEET_URL_PREFIX is deprecated. Please use RELAY_URL_PREFIX" >&2
+    export RELAY_URL_PREFIX="$Y_SWEET_URL_PREFIX"
+fi
+
+# If RELAY_URL_PREFIX is not set but FLY_APP_NAME is, construct the URL
+if [ -z "$RELAY_URL_PREFIX" ] && [ -n "$FLY_APP_NAME" ]; then
+    export RELAY_URL_PREFIX="https://$FLY_APP_NAME.fly.dev"
+    echo "🪽  Running on fly.io. Setting --url-prefix=$RELAY_URL_PREFIX"
 fi
 
 if [ -n "$TAILSCALE_AUTHKEY" ]; then

@@ -4,7 +4,7 @@ use worker::Env;
 use y_sweet_core::auth::KeyId;
 use y_sweet_core::store::s3::S3Config;
 
-const BUCKET: &str = "Y_SWEET_DATA";
+const BUCKET: &str = "RELAY_DATA";
 const BUCKET_KIND: &str = "BUCKET_KIND";
 const AUTH_KEY: &str = "AUTH_KEY";
 const S3_ACCESS_KEY_ID: &str = "AWS_ACCESS_KEY_ID";

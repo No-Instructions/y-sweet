@@ -160,7 +160,7 @@ pub async fn sign_stdin(auth: &Authenticator) -> anyhow::Result<()> {
 
             let token = auth.gen_doc_token(&doc_id, authorization.clone(), expiration);
 
-            let (url, base_url) = if let Ok(prefix_url) = std::env::var("Y_SWEET_PREFIX_URL") {
+            let (url, base_url) = if let Ok(prefix_url) = std::env::var("RELAY_PREFIX_URL") {
                 let prefix_url = Url::parse(&prefix_url)?;
                 let mut ws_url = prefix_url.clone();
                 ws_url
