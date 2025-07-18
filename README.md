@@ -6,21 +6,31 @@ Relay Server is a fork of [jamsocket/y-sweet](https://github.com/jamsocket/y-swe
 
 ## Features
 
-- **Share folders, not vaults** – collaborate on specific folders while keeping personal notes private.
-- **Built for speed** – live cursors and low-latency updates keep collaboration snappy.
-- **Works offline** – edits sync automatically when clients reconnect.
-- **Local-first storage** – your content stays on your server and in your control.
+ - Real‑time collaboration engine built atop y-crdt, enabling high-performance conflict‑free shared editing
+ - Use the Relay.md control plane for login and access control management
+ - Fully private self-hosting of your documents and attachments (no connection to the public internet required!)
+ - 1-step deployment into your Tailscale Tailnet
+ - Persistence to S3‑compatible object storage (S3, Cloudflare R2, Minio)
+ - Flexible deployment/isolation with single server or session‑per‑document model
+ - Python SDK
+ - Webhook Event Delivery
+
 
 ## Self-hosting
+
+> :information_source: **Note:** The Relay Server and Relay Obsidian Plugin are open source, but the Relay Control Plan is not open source. Using a Self-Hosted Relay Server with more than 3 collaborators requires a paid license to support the development of Relay.
+
 
 Self-hosting gives you complete privacy for your notes and attachments. Relay's Control Plane handles login and permissions, but cannot read your content. The recommended setup uses Docker with Cloudflare R2 for persistence.
 
 See [relay-server-template](https://github.com/no-instructions/relay-server-template) for detailed hosting instructions and deployment templates.
 
+
 ## Contact
 
 - Discord: [https://discord.system3.md](https://discord.system3.md)
 - Email: contact@system3.md
+
 
 ## Acknowledgements
 
