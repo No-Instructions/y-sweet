@@ -24,6 +24,7 @@ nanoid = "0.4.0"
 rand = "0.8.5"
 reqwest = { version = "0.12.5", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
 rusty-s3 = "0.7.0"
+jiff = { version = "0.2.1", features = ["std"] }
 quick-xml = "0.31.0"
 serde = { version = "1.0.173", features = ["derive"] }
 serde_json = "1.0.103"
@@ -40,3 +41,6 @@ yrs-kvstore = "0.3.0"
 [dev-dependencies]
 tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
 dashmap = "6.0.1"
+
+[patch.crates-io]
+rusty-s3 = { git = "https://github.com/dtkav/rusty-s3", branch = "main" }
