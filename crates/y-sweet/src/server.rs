@@ -6,7 +6,7 @@ use axum::{
         Path, Query, Request, State, WebSocketUpgrade,
     },
     http::{
-        header::{HeaderMap, HeaderName},
+        header::{HeaderMap, HeaderName, HeaderValue},
         StatusCode,
     },
     middleware::{self, Next},
@@ -45,6 +45,7 @@ use y_sweet_core::{
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
+const RELAY_SERVER_VERSION: &str = env!("GIT_VERSION");
 
 fn current_time_epoch_millis() -> u64 {
     let now = std::time::SystemTime::now();
@@ -318,6 +319,15 @@ impl Server {
         resp
     }
 
+    pub async fn version_header_middleware(req: Request, next: Next) -> impl IntoResponse {
+        let mut resp = next.run(req).await;
+        resp.headers_mut().insert(
+            HeaderName::from_static("relay-server-version"),
+            HeaderValue::from_static(RELAY_SERVER_VERSION),
+        );
+        resp
+    }
+
     pub fn routes(self: &Arc<Self>) -> Router {
         Router::new()
             .route("/ready", get(ready))
@@ -360,10 +370,11 @@ impl Server {
     ) -> Result<()> {
         let token = self.cancellation_token.clone();
 
+        let app = routes.layer(middleware::from_fn(Self::version_header_middleware));
         let app = if redact_errors {
-            routes
+            app
         } else {
-            routes.layer(middleware::from_fn(Self::redact_error_middleware))
+            app.layer(middleware::from_fn(Self::redact_error_middleware))
         };
 
         axum::serve(listener, app.into_make_service())

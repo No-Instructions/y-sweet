@@ -6,6 +6,7 @@ description = "A standalone Yjs CRDT server with built-in persistence and auth."
 license = "MIT"
 homepage = "https://y-sweet.dev"
 repository = "https://github.com/drifting-in-space/y-sweet"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0.72"
