@@ -34,7 +34,7 @@ struct Opts {
 #[derive(Subcommand)]
 enum ServSubcommand {
     Serve {
-        #[clap(env = "RELAY_STORE")]
+        #[clap(env = "RELAY_STORAGE")]
         store: Option<String>,
 
         #[clap(long, default_value = "8080", env = "PORT")]
@@ -63,7 +63,7 @@ enum ServSubcommand {
     /// The YDoc update should be passed in via stdin.
     ConvertFromUpdate {
         /// The store to write the document to.
-        #[clap(env = "RELAY_STORE")]
+        #[clap(env = "RELAY_STORAGE")]
         store: String,
 
         /// The ID of the document to write.
@@ -102,8 +102,8 @@ enum ServSubcommand {
 
 fn get_store_from_opts(store_path: &str) -> Result<Box<dyn Store>> {
     if store_path.starts_with("s3://") {
-        // Set the RELAY_STORE environment variable so S3Config::from_env can use it
-        env::set_var("RELAY_STORE", store_path);
+        // Set the RELAY_STORAGE environment variable so S3Config::from_env can use it
+        env::set_var("RELAY_STORAGE", store_path);
 
         // Use the unified S3Config::from_env method
         let config = S3Config::from_env(None, None)?;

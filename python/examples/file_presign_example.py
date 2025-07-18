@@ -40,8 +40,8 @@ def main():
     if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
         print("Warning: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY should be set for S3 operations.")
     
-    if not os.environ.get("STORAGE_BUCKET") and not os.environ.get("RELAY_STORE"):
-        print("Warning: STORAGE_BUCKET or RELAY_STORE should be set for S3 operations.")
+    if not os.environ.get("STORAGE_BUCKET") and not os.environ.get("RELAY_STORAGE"):
+        print("Warning: STORAGE_BUCKET or RELAY_STORAGE should be set for S3 operations.")
     
     try:
         # Initialize the token generator

@@ -38,8 +38,8 @@ impl S3Config {
     ///
     /// This is the unified configuration parser used by both y-sweet and y-sign
     pub fn from_env(bucket: Option<String>, prefix: Option<String>) -> anyhow::Result<Self> {
-        // First check for RELAY_STORE which has highest precedence
-        if let Ok(store_path) = env::var("RELAY_STORE") {
+        // First check for RELAY_STORAGE which has highest precedence
+        if let Ok(store_path) = env::var("RELAY_STORAGE") {
             if store_path.starts_with("s3://") {
                 // Parse the S3 URL to extract bucket and prefix
                 let url = UrlParser::parse(&store_path)?;
@@ -62,7 +62,7 @@ impl S3Config {
 
         // Otherwise, look for STORAGE_BUCKET or AWS_S3_BUCKET
         let bucket = env::var("STORAGE_BUCKET").or_else(|_| env::var("AWS_S3_BUCKET"))
-            .map_err(|_| anyhow::anyhow!("Either RELAY_STORE (s3:// URL) or STORAGE_BUCKET/AWS_S3_BUCKET environment variable is required"))?;
+            .map_err(|_| anyhow::anyhow!("Either RELAY_STORAGE (s3:// URL) or STORAGE_BUCKET/AWS_S3_BUCKET environment variable is required"))?;
 
         // Use STORAGE_PREFIX for consistency with both tools
         let bucket_prefix = env::var("STORAGE_PREFIX")

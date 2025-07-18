@@ -633,7 +633,7 @@ enum SignSubcommand {
         action: String,
 
         /// Optional S3 store URL (s3://bucket/path format)
-        #[clap(long, env = "RELAY_STORE")]
+        #[clap(long, env = "RELAY_STORAGE")]
         store: Option<String>,
 
         /// Optional AWS endpoint URL override
@@ -683,7 +683,7 @@ async fn main() -> Result<()> {
         } => {
             // If store is provided via CLI arg, set it as an environment variable
             if let Some(store_url) = store {
-                std::env::set_var("RELAY_STORE", store_url);
+                std::env::set_var("RELAY_STORAGE", store_url);
             }
 
             // Use the unified S3Config::from_env method

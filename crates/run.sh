@@ -5,14 +5,17 @@ set -e  # Exit on error
 trap "exit" TERM INT
 
 # Backwards compatibility for deprecated Y_SWEET_ variables
-if [ -z "$RELAY_URL_PREFIX" ] && [ -n "$Y_SWEET_URL_PREFIX" ]; then
-    echo "⚠️  Y_SWEET_URL_PREFIX is deprecated. Please use RELAY_URL_PREFIX" >&2
-    export RELAY_URL_PREFIX="$Y_SWEET_URL_PREFIX"
-fi
-if [ -z "$RELAY_STORE" ] && [ -n "$Y_SWEET_STORE" ]; then
-    echo "⚠️  Y_SWEET_STORE is deprecated. Please use RELAY_STORE" >&2
-    export RELAY_STORE="$Y_SWEET_STORE"
-fi
+use_legacy_var() {
+    local new_var=$1
+    local old_var=$2
+    if [ -z "$(eval echo \$$new_var)" ] && [ -n "$(eval echo \$$old_var)" ]; then
+        echo "⚠️  $old_var is deprecated. Please use $new_var" >&2
+        eval export $new_var="\$$old_var"
+    fi
+}
+
+use_legacy_var RELAY_URL_PREFIX Y_SWEET_URL_PREFIX
+use_legacy_var RELAY_STORAGE Y_SWEET_STORE
 
 # If RELAY_URL_PREFIX is not set but FLY_APP_NAME is, construct the URL
 if [ -z "$RELAY_URL_PREFIX" ] && [ -n "$FLY_APP_NAME" ]; then
@@ -20,11 +23,12 @@ if [ -z "$RELAY_URL_PREFIX" ] && [ -n "$FLY_APP_NAME" ]; then
     echo "🪽  Running on fly.io. Setting --url-prefix=$RELAY_URL_PREFIX"
 fi
 
-# If RELAY_STORE is not set, default to local /data
-if [ -z "$RELAY_STORE" ]; then
-    export RELAY_STORE=/data
+# RELAY_STORAGE is required
+if [ -z "$RELAY_STORAGE" ]; then
+    echo "RELAY_STORAGE environment variable is required" >&2
+    exit 1
 fi
-echo "💾 Persisting data to $RELAY_STORE"
+echo "💾 Persisting data to $RELAY_STORAGE"
 
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     echo "🔑 Joining tailnet..."
