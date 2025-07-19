@@ -976,4 +976,70 @@ mod tests {
         let deserialized: Authenticator = serde_json::from_str(&serialized).unwrap();
         assert_eq!(authenticator, deserialized);
     }
+
+    #[test]
+    fn test_doc_token_cwt() {
+        let authenticator = Authenticator::gen_key().unwrap();
+        let token = authenticator.gen_doc_token_cwt(
+            "doc123",
+            Authorization::Full,
+            ExpirationTimeEpochMillis(0),
+        );
+
+        assert!(matches!(
+            authenticator.verify_doc_token(&token, "doc123", 0),
+            Ok(Authorization::Full)
+        ));
+
+        let payload = authenticator.decode_token(&token).unwrap();
+        match payload.payload {
+            Permission::Doc(doc) => {
+                assert_eq!(doc.doc_id, "doc123");
+                assert_eq!(doc.authorization, Authorization::Full);
+            }
+            _ => panic!("Expected doc permission"),
+        }
+    }
+
+    #[test]
+    fn test_file_token_cwt() {
+        let authenticator = Authenticator::gen_key().unwrap();
+        let token = authenticator.gen_file_token_cwt(
+            "hash",
+            "doc123",
+            Authorization::ReadOnly,
+            ExpirationTimeEpochMillis(0),
+            Some("text/plain"),
+            Some(42),
+        );
+
+        assert!(matches!(
+            authenticator.verify_file_token(&token, "hash", 0),
+            Ok(Authorization::ReadOnly)
+        ));
+
+        let payload = authenticator.decode_token(&token).unwrap();
+        match payload.payload {
+            Permission::File(f) => {
+                assert_eq!(f.file_hash, "hash");
+                assert_eq!(f.doc_id, "doc123");
+                assert_eq!(f.authorization, Authorization::ReadOnly);
+                assert_eq!(f.content_type, Some("text/plain".to_string()));
+                assert_eq!(f.content_length, Some(42));
+            }
+            _ => panic!("Expected file permission"),
+        }
+    }
+
+    #[test]
+    fn test_server_token_cwt() {
+        let authenticator = Authenticator::gen_key().unwrap();
+        let token = authenticator.server_token_cwt();
+
+        assert!(matches!(authenticator.verify_server_token(&token, 0), Ok(())));
+        assert!(matches!(
+            authenticator.verify_doc_token(&token, "doc123", 0),
+            Ok(Authorization::Full)
+        ));
+    }
 }
