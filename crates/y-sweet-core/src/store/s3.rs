@@ -1,7 +1,8 @@
-use super::{FileInfo, Result, StoreError};
+use super::{FileInfo, Result, StoreError, VersionInfo};
 use crate::store::Store;
 use async_trait::async_trait;
 use bytes::Bytes;
+use jiff::Timestamp;
 use reqwest::{Client, Method, Response, StatusCode, Url};
 use rusty_s3::{Bucket, Credentials, S3Action};
 use serde::{Deserialize, Serialize};
@@ -188,7 +189,7 @@ impl S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
@@ -200,7 +201,7 @@ impl S3Store {
         action: A,
         body: Option<Vec<u8>>,
     ) -> Result<Response> {
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         let mut request = self.client.request(method, url);
 
         request = if let Some(body) = body {
@@ -370,11 +371,11 @@ impl Store for S3Store {
     async fn exists(&self, key: &str) -> Result<bool> {
         self.exists(key).await
     }
-    
+
     /// List files with a common prefix and return file info (key, size, last_modified)
     async fn list(&self, prefix: &str) -> Result<Vec<FileInfo>> {
         self.init().await?;
-        
+
         // Apply storage prefix if configured
         let prefixed = if let Some(path_prefix) = &self.prefix {
             if path_prefix.ends_with('/') {
@@ -385,45 +386,52 @@ impl Store for S3Store {
         } else {
             prefix.to_string()
         };
-        
+
         tracing::debug!("Listing objects with prefix: {}", prefixed);
-        
+
         // For S3, we need to sign the list request ourselves
         // We can use the head_bucket method to get a signed URL, then modify it
         let head_action = self.bucket.head_bucket(Some(&self.credentials));
         let head_url = head_action.sign(Duration::from_secs(60));
-        
+
         // Convert the head URL to a list_objects request
         let url_str = head_url.to_string();
-        let url = url_str.replace("?", "?list-type=2&prefix=").replace("?list-type", "&list-type");
+        let url = url_str
+            .replace("?", "?list-type=2&prefix=")
+            .replace("?list-type", "&list-type");
         let url = format!("{}{}", url, urlencoding::encode(&prefixed));
-        
+
         let request = self.client.request(Method::GET, url);
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
-            
+
         if !response.status().is_success() {
-            return Err(StoreError::ConnectionError(
-                format!("Failed to list objects: HTTP {}", response.status())
-            ));
+            return Err(StoreError::ConnectionError(format!(
+                "Failed to list objects: HTTP {}",
+                response.status()
+            )));
         }
-        
+
         // Get the response body
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
         let text = String::from_utf8_lossy(&bytes);
-        
+
         // Parse the XML response using quick-xml
         let mut reader = quick_xml::Reader::from_str(&text);
         reader.trim_text(true);
-        
+
         let mut buf = Vec::new();
         let mut files = Vec::new();
         let mut in_contents = false;
         let mut current_key = None;
         let mut current_size = None;
         let mut current_last_modified = None;
-        
+
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(e)) => {
@@ -433,33 +441,41 @@ impl Store for S3Store {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 current_key = Some(text.to_string());
                             }
-                        },
+                        }
                         b"Size" if in_contents => {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 current_size = text.parse::<u64>().ok();
                             }
-                        },
+                        }
                         b"LastModified" if in_contents => {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 // Parse RFC3339 date string to timestamp
-                                if let Ok(date_time) = time::OffsetDateTime::parse(&text, &time::format_description::well_known::Rfc3339) {
-                                    current_last_modified = Some(date_time.unix_timestamp_nanos() as u64 / 1_000_000);
+                                if let Ok(date_time) = time::OffsetDateTime::parse(
+                                    &text,
+                                    &time::format_description::well_known::Rfc3339,
+                                ) {
+                                    current_last_modified =
+                                        Some(date_time.unix_timestamp_nanos() as u64 / 1_000_000);
                                 }
                             }
-                        },
+                        }
                         _ => {}
                     }
-                },
+                }
                 Ok(quick_xml::events::Event::End(e)) => {
                     if e.name().as_ref() == b"Contents" {
                         in_contents = false;
-                        
+
                         // If we have all required fields, add to our results
-                        if let (Some(key), Some(size), Some(last_modified)) = (current_key.take(), current_size.take(), current_last_modified.take()) {
+                        if let (Some(key), Some(size), Some(last_modified)) = (
+                            current_key.take(),
+                            current_size.take(),
+                            current_last_modified.take(),
+                        ) {
                             // Extract just the filename from the full key path
                             let key_parts: Vec<&str> = key.split('/').collect();
                             let file_name = key_parts.last().unwrap_or(&"").to_string();
-                            
+
                             if !file_name.is_empty() {
                                 files.push(FileInfo {
                                     key: file_name,
@@ -469,20 +485,87 @@ impl Store for S3Store {
                             }
                         }
                     }
-                },
+                }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => {
-                    return Err(StoreError::ConnectionError(
-                        format!("Error parsing S3 list response: {}", e)
-                    ));
-                },
+                    return Err(StoreError::ConnectionError(format!(
+                        "Error parsing S3 list response: {}",
+                        e
+                    )));
+                }
                 _ => {}
             }
             buf.clear();
         }
-        
+
         tracing::debug!("Found {} files with prefix {}", files.len(), prefixed);
         Ok(files)
+    }
+
+    async fn list_versions(&self, key: &str) -> Result<Vec<VersionInfo>> {
+        self.init().await?;
+
+        let prefixed_key = if let Some(prefix) = &self.prefix {
+            if prefix.ends_with('/') {
+                format!("{}{}", prefix, key)
+            } else {
+                format!("{}/{}", prefix, key)
+            }
+        } else {
+            key.to_string()
+        };
+
+        let mut action = self.bucket.list_object_versions(Some(&self.credentials));
+        action.with_prefix(&prefixed_key);
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
+
+        let response = self
+            .client
+            .request(Method::GET, url)
+            .send()
+            .await
+            .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(StoreError::ConnectionError(format!(
+                "Failed to list object versions: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
+
+        let parsed =
+            rusty_s3::actions::ListObjectVersions::parse_response(&bytes).map_err(|e| {
+                StoreError::ConnectionError(format!(
+                    "Error parsing S3 list versions response: {}",
+                    e
+                ))
+            })?;
+
+        let versions = parsed
+            .versions
+            .into_iter()
+            .filter(|v| v.key == prefixed_key)
+            .map(|v| {
+                let ts = OffsetDateTime::parse(
+                    &v.last_modified,
+                    &time::format_description::well_known::Rfc3339,
+                )
+                .map(|dt| dt.unix_timestamp_nanos() as u64 / 1_000_000)
+                .unwrap_or(0);
+                VersionInfo {
+                    version_id: v.version_id,
+                    last_modified: ts,
+                    is_latest: v.is_latest,
+                }
+            })
+            .collect();
+
+        Ok(versions)
     }
 
     /// Generate a presigned URL for uploading a file to S3
@@ -535,7 +618,7 @@ impl Store for S3Store {
         }
 
         // Sign the URL with time
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         tracing::debug!("Generated upload URL: {}", url);
 
         Ok(Some(url.to_string()))
@@ -566,7 +649,7 @@ impl Store for S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
@@ -700,12 +783,12 @@ mod tests {
         let result = store.prefixed_key("docs/testkey");
         assert_eq!(result, "docs/testkey");
     }
-    
+
     #[test]
     fn test_parse_list_objects_xml() {
         use super::*;
         use quick_xml::Reader;
-        
+
         // Sample S3 ListObjectsV2 response XML
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
@@ -740,14 +823,14 @@ mod tests {
         // Parse the XML response
         let mut reader = Reader::from_str(xml);
         reader.trim_text(true);
-        
+
         let mut buf = Vec::new();
         let mut files = Vec::new();
         let mut in_contents = false;
         let mut current_key = None;
         let mut current_size = None;
         let mut current_last_modified = None;
-        
+
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(e)) => {
@@ -757,31 +840,35 @@ mod tests {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 current_key = Some(text.to_string());
                             }
-                        },
+                        }
                         b"Size" if in_contents => {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 current_size = text.parse::<u64>().ok();
                             }
-                        },
+                        }
                         b"LastModified" if in_contents => {
                             if let Ok(_text) = reader.read_text(e.name()) {
                                 // We can't easily test the actual date parsing here, so just store the string
                                 current_last_modified = Some(123456789); // dummy timestamp
                             }
-                        },
+                        }
                         _ => {}
                     }
-                },
+                }
                 Ok(quick_xml::events::Event::End(e)) => {
                     if e.name().as_ref() == b"Contents" {
                         in_contents = false;
-                        
+
                         // If we have all required fields, add to our results
-                        if let (Some(key), Some(size), Some(last_modified)) = (current_key.take(), current_size.take(), current_last_modified.take()) {
+                        if let (Some(key), Some(size), Some(last_modified)) = (
+                            current_key.take(),
+                            current_size.take(),
+                            current_last_modified.take(),
+                        ) {
                             // Extract just the filename from the full key path
                             let key_parts: Vec<&str> = key.split('/').collect();
                             let file_name = key_parts.last().unwrap_or(&"").to_string();
-                            
+
                             if !file_name.is_empty() {
                                 files.push(FileInfo {
                                     key: file_name,
@@ -791,25 +878,25 @@ mod tests {
                             }
                         }
                     }
-                },
+                }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(_) => break,
                 _ => {}
             }
             buf.clear();
         }
-        
+
         // Verify the results
         assert_eq!(files.len(), 3);
-        
+
         // Check first file
         assert_eq!(files[0].key, "abc123");
         assert_eq!(files[0].size, 1024);
-        
+
         // Check second file
         assert_eq!(files[1].key, "def456");
         assert_eq!(files[1].size, 2048);
-        
+
         // Check third file
         assert_eq!(files[2].key, "ghi789");
         assert_eq!(files[2].size, 3072);
@@ -838,11 +925,11 @@ impl Store for S3Store {
     async fn exists(&self, key: &str) -> Result<bool> {
         self.exists(key).await
     }
-    
+
     /// List files with a common prefix and return file info (key, size, last_modified)
     async fn list(&self, prefix: &str) -> Result<Vec<FileInfo>> {
         self.init().await?;
-        
+
         // Apply storage prefix if configured
         let prefixed = if let Some(path_prefix) = &self.prefix {
             if path_prefix.ends_with('/') {
@@ -853,45 +940,52 @@ impl Store for S3Store {
         } else {
             prefix.to_string()
         };
-        
+
         tracing::debug!("Listing objects with prefix: {}", prefixed);
-        
+
         // For S3, we need to sign the list request ourselves
         // We can use the head_bucket method to get a signed URL, then modify it
         let head_action = self.bucket.head_bucket(Some(&self.credentials));
         let head_url = head_action.sign(Duration::from_secs(60));
-        
+
         // Convert the head URL to a list_objects request
         let url_str = head_url.to_string();
-        let url = url_str.replace("?", "?list-type=2&prefix=").replace("?list-type", "&list-type");
+        let url = url_str
+            .replace("?", "?list-type=2&prefix=")
+            .replace("?list-type", "&list-type");
         let url = format!("{}{}", url, urlencoding::encode(&prefixed));
-        
+
         let request = self.client.request(Method::GET, url);
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
-            
+
         if !response.status().is_success() {
-            return Err(StoreError::ConnectionError(
-                format!("Failed to list objects: HTTP {}", response.status())
-            ));
+            return Err(StoreError::ConnectionError(format!(
+                "Failed to list objects: HTTP {}",
+                response.status()
+            )));
         }
-        
+
         // Get the response body
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|e| StoreError::ConnectionError(e.to_string()))?;
         let text = String::from_utf8_lossy(&bytes);
-        
+
         // Parse the XML response using quick-xml
         let mut reader = quick_xml::Reader::from_str(&text);
         reader.trim_text(true);
-        
+
         let mut buf = Vec::new();
         let mut files = Vec::new();
         let mut in_contents = false;
         let mut current_key = None;
         let mut current_size = None;
         let mut current_last_modified = None;
-        
+
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(quick_xml::events::Event::Start(e)) => {
@@ -901,33 +995,41 @@ impl Store for S3Store {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 current_key = Some(text.to_string());
                             }
-                        },
+                        }
                         b"Size" if in_contents => {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 current_size = text.parse::<u64>().ok();
                             }
-                        },
+                        }
                         b"LastModified" if in_contents => {
                             if let Ok(text) = reader.read_text(e.name()) {
                                 // Parse RFC3339 date string to timestamp
-                                if let Ok(date_time) = time::OffsetDateTime::parse(&text, &time::format_description::well_known::Rfc3339) {
-                                    current_last_modified = Some(date_time.unix_timestamp_nanos() as u64 / 1_000_000);
+                                if let Ok(date_time) = time::OffsetDateTime::parse(
+                                    &text,
+                                    &time::format_description::well_known::Rfc3339,
+                                ) {
+                                    current_last_modified =
+                                        Some(date_time.unix_timestamp_nanos() as u64 / 1_000_000);
                                 }
                             }
-                        },
+                        }
                         _ => {}
                     }
-                },
+                }
                 Ok(quick_xml::events::Event::End(e)) => {
                     if e.name().as_ref() == b"Contents" {
                         in_contents = false;
-                        
+
                         // If we have all required fields, add to our results
-                        if let (Some(key), Some(size), Some(last_modified)) = (current_key.take(), current_size.take(), current_last_modified.take()) {
+                        if let (Some(key), Some(size), Some(last_modified)) = (
+                            current_key.take(),
+                            current_size.take(),
+                            current_last_modified.take(),
+                        ) {
                             // Extract just the filename from the full key path
                             let key_parts: Vec<&str> = key.split('/').collect();
                             let file_name = key_parts.last().unwrap_or(&"").to_string();
-                            
+
                             if !file_name.is_empty() {
                                 files.push(FileInfo {
                                     key: file_name,
@@ -937,18 +1039,19 @@ impl Store for S3Store {
                             }
                         }
                     }
-                },
+                }
                 Ok(quick_xml::events::Event::Eof) => break,
                 Err(e) => {
-                    return Err(StoreError::ConnectionError(
-                        format!("Error parsing S3 list response: {}", e)
-                    ));
-                },
+                    return Err(StoreError::ConnectionError(format!(
+                        "Error parsing S3 list response: {}",
+                        e
+                    )));
+                }
                 _ => {}
             }
             buf.clear();
         }
-        
+
         tracing::debug!("Found {} files with prefix {}", files.len(), prefixed);
         Ok(files)
     }
@@ -1000,7 +1103,7 @@ impl Store for S3Store {
         }
 
         // Sign the URL with time
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
         tracing::debug!("Generated upload URL: {}", url);
 
         Ok(Some(url.to_string()))
@@ -1031,7 +1134,7 @@ impl Store for S3Store {
         let action = self
             .bucket
             .get_object(Some(&self.credentials), &prefixed_key);
-        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &OffsetDateTime::now_utc());
+        let url = action.sign_with_time(PRESIGNED_URL_DURATION, &Timestamp::now());
 
         tracing::debug!("Generated download URL: {}", url);
         Ok(Some(url.to_string()))
