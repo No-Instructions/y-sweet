@@ -72,6 +72,25 @@ class TestYSignTokenGenerator:
         # Check result was parsed correctly
         assert result["docId"] == "test-doc"
         assert result["token"] == "test-token"
+
+    def test_generate_document_token_cwt(self, mock_which, mock_subprocess_run):
+        """Test generating a document token with the CWT flag."""
+        mock_subprocess_run.return_value.stdout = json.dumps({
+            "docId": "test-doc",
+            "token": "test-token",
+            "type": "document",
+            "authorization": "full",
+        })
+
+        generator = YSignTokenGenerator("test-key")
+        result = generator.generate_document_token("test-doc", cwt=True)
+
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "--cwt" in call_args
+
+        input_data = mock_subprocess_run.call_args[1]["input"]
+        assert json.loads(input_data)["docId"] == "test-doc"
+        assert result["token"] == "test-token"
     
     def test_generate_file_token(self, mock_which, mock_subprocess_run):
         """Test generating a file token."""
@@ -101,6 +120,25 @@ class TestYSignTokenGenerator:
         
         # Check result was parsed correctly
         assert result["fileHash"] == "test-hash"
+        assert result["token"] == "test-token"
+
+    def test_generate_file_token_cwt(self, mock_which, mock_subprocess_run):
+        """Test generating a file token with the CWT flag."""
+        mock_subprocess_run.return_value.stdout = json.dumps({
+            "fileHash": "test-hash",
+            "token": "test-token",
+            "type": "file",
+            "authorization": "full",
+        })
+
+        generator = YSignTokenGenerator("test-key")
+        result = generator.generate_file_token("test-hash", cwt=True)
+
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "--cwt" in call_args
+
+        input_data = mock_subprocess_run.call_args[1]["input"]
+        assert json.loads(input_data)["fileHash"] == "test-hash"
         assert result["token"] == "test-token"
     
     def test_verify_token(self, mock_which, mock_subprocess_run):
