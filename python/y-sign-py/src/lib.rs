@@ -75,10 +75,13 @@ impl TokenGenerator {
     }
 
     // Generate a document token
+    #[pyo3(signature = (doc_id, authorization, *, cwt=false))]
     fn generate_document_token(
         &self,
         doc_id: &str,
         authorization: PyAuthorization,
+        *,
+        cwt: bool,
         py: Python<'_>,
     ) -> PyResult<PyObject> {
         let current_time = SystemTime::now()
@@ -93,7 +96,12 @@ impl TokenGenerator {
         );
         
         let auth_rust: Authorization = authorization.into();
-        let token = self.authenticator.gen_doc_token(doc_id, auth_rust, expiration);
+        let token = if cwt {
+            self.authenticator
+                .gen_doc_token_cwt(doc_id, auth_rust, expiration)
+        } else {
+            self.authenticator.gen_doc_token(doc_id, auth_rust, expiration)
+        };
         
         // Create Python dict to return
         let result = PyDict::new(py);
@@ -111,14 +119,17 @@ impl TokenGenerator {
     }
 
     // Generate a file token
+    #[pyo3(signature = (doc_id, file_hash, authorization, *, content_type=None, content_length=None, cwt=false))]
     fn generate_file_token(
         &self,
         doc_id: &str,
         file_hash: &str,
         authorization: PyAuthorization,
-        py: Python<'_>,
+        *,
         content_type: Option<&str>,
         content_length: Option<u64>,
+        cwt: bool,
+        py: Python<'_>,
     ) -> PyResult<PyObject> {
         let current_time = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -132,7 +143,25 @@ impl TokenGenerator {
         );
         
         let auth_rust: Authorization = authorization.into();
-        let token = self.authenticator.gen_file_token(file_hash, doc_id, auth_rust, expiration, content_type, content_length);
+        let token = if cwt {
+            self.authenticator.gen_file_token_cwt(
+                file_hash,
+                doc_id,
+                auth_rust,
+                expiration,
+                content_type,
+                content_length,
+            )
+        } else {
+            self.authenticator.gen_file_token(
+                file_hash,
+                doc_id,
+                auth_rust,
+                expiration,
+                content_type,
+                content_length,
+            )
+        };
         
         // Create Python dict to return
         let result = PyDict::new(py);
@@ -160,8 +189,13 @@ impl TokenGenerator {
     }
 
     // Generate a server token
-    fn generate_server_token(&self) -> PyResult<String> {
-        Ok(self.authenticator.server_token())
+    #[pyo3(signature = (cwt=false))]
+    fn generate_server_token(&self, cwt: bool) -> PyResult<String> {
+        if cwt {
+            Ok(self.authenticator.server_token_cwt())
+        } else {
+            Ok(self.authenticator.server_token())
+        }
     }
 
     // Verify a document token
