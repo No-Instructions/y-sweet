@@ -33,8 +33,8 @@ use url::Url;
 use y_sweet_core::{
     api_types::{
         validate_doc_name, validate_file_hash, AuthDocRequest, Authorization, ClientToken,
-        DocCreationRequest, FileDownloadUrlResponse, FileHistoryEntry, FileHistoryResponse,
-        FileUploadUrlResponse, NewDocResponse,
+        DocCreationRequest, DocumentVersionEntry, DocumentVersionResponse, FileDownloadUrlResponse,
+        FileHistoryEntry, FileHistoryResponse, FileUploadUrlResponse, NewDocResponse,
     },
     auth::{Authenticator, ExpirationTimeEpochMillis, Permission, DEFAULT_EXPIRATION_SECONDS},
     doc_connection::DocConnection,
@@ -42,7 +42,7 @@ use y_sweet_core::{
     store::Store,
     sync::awareness::Awareness,
     sync_kv::SyncKv,
-    webhook::{WebhookDispatcher, create_webhook_callback},
+    webhook::{create_webhook_callback, WebhookDispatcher},
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
@@ -141,11 +141,12 @@ impl Server {
 
     pub async fn reload_webhook_config(&self) -> Result<String, anyhow::Error> {
         use y_sweet_core::webhook::WebhookDispatcher;
-        
+
         // Try to load new configuration from store
-        let new_dispatcher = WebhookDispatcher::from_store(self.store.clone()).await
+        let new_dispatcher = WebhookDispatcher::from_store(self.store.clone())
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to load webhook config from store: {}", e))?;
-        
+
         // If no store config found, try environment variable fallback
         let (new_dispatcher, config_source) = if new_dispatcher.is_none() {
             if let Some(env_dispatcher) = crate::webhook::create_webhook_dispatcher() {
@@ -156,32 +157,43 @@ impl Server {
         } else {
             (new_dispatcher, "store")
         };
-        
+
         // Update webhook dispatcher with write lock
         {
             let mut dispatcher_guard = self.webhook_dispatcher.write().unwrap();
-            
+
             // Gracefully shutdown old dispatcher if it exists
             if let Some(old_dispatcher) = dispatcher_guard.as_ref() {
                 old_dispatcher.shutdown();
             }
-            
+
             *dispatcher_guard = new_dispatcher.map(Arc::new);
         }
-        
+
         // Return status message and log configuration details
         let status = match &*self.webhook_dispatcher.read().unwrap() {
             Some(dispatcher) => {
                 // Print configuration details
                 for config in &dispatcher.configs {
-                    tracing::info!("Webhook config: prefix='{}' -> url='{}' (timeout: {}ms)", 
-                          config.prefix, config.url, config.timeout_ms);
+                    tracing::info!(
+                        "Webhook config: prefix='{}' -> url='{}' (timeout: {}ms)",
+                        config.prefix,
+                        config.url,
+                        config.timeout_ms
+                    );
                 }
-                format!("Webhook configuration loaded from {} with {} configs", config_source, dispatcher.configs.len())
+                format!(
+                    "Webhook configuration loaded from {} with {} configs",
+                    config_source,
+                    dispatcher.configs.len()
+                )
             }
-            None => format!("Webhook configuration loaded from {} - webhooks disabled", config_source),
+            None => format!(
+                "Webhook configuration loaded from {} - webhooks disabled",
+                config_source
+            ),
         };
-        
+
         tracing::info!("{}", status);
         Ok(status)
     }
@@ -189,7 +201,9 @@ impl Server {
     fn validate_doc_id(doc_id: &str) -> Result<()> {
         // Reject system configuration paths that are reserved for internal use
         if doc_id.starts_with(".config/") || doc_id == ".config" {
-            return Err(anyhow::anyhow!("Document ID cannot access system configuration directory '.config'"));
+            return Err(anyhow::anyhow!(
+                "Document ID cannot access system configuration directory '.config'"
+            ));
         }
         Ok(())
     }
@@ -200,14 +214,19 @@ impl Server {
 
         let webhook_callback = {
             let dispatcher_guard = self.webhook_dispatcher.read().unwrap();
-            dispatcher_guard.as_ref().map(|dispatcher| {
-                create_webhook_callback(dispatcher.clone())
-            })
+            dispatcher_guard
+                .as_ref()
+                .map(|dispatcher| create_webhook_callback(dispatcher.clone()))
         };
 
-        let dwskv = DocWithSyncKv::new(doc_id, self.store.clone(), move || {
-            send.try_send(()).unwrap();
-        }, webhook_callback)
+        let dwskv = DocWithSyncKv::new(
+            doc_id,
+            self.store.clone(),
+            move || {
+                send.try_send(()).unwrap();
+            },
+            webhook_callback,
+        )
         .await?;
 
         dwskv
@@ -411,6 +430,7 @@ impl Server {
             .route("/doc/:doc_id/update", post(update_doc_deprecated))
             .route("/d/:doc_id/as-update", get(get_doc_as_update))
             .route("/d/:doc_id/update", post(update_doc))
+            .route("/d/:doc_id/versions", get(handle_doc_versions))
             .route(
                 "/d/:doc_id/ws/:doc_id2",
                 get(handle_socket_upgrade_full_path),
@@ -1023,7 +1043,7 @@ async fn handle_file_download_url(
 }
 
 /// Delete all files for a document
-/// 
+///
 /// This endpoint accepts either:
 /// - A file token with the doc_id (hash not required)
 /// - A doc token with the doc_id
@@ -1065,17 +1085,17 @@ async fn handle_file_delete(
             // List all files in the document's directory
             let prefix = format!("files/{}/", doc_id);
             let store = server_state.store.as_ref().unwrap();
-            
+
             let file_infos = store
                 .list(&prefix)
                 .await
                 .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-            
+
             if file_infos.is_empty() {
                 tracing::info!("No files to delete for document: {}", doc_id);
                 return Ok(StatusCode::NO_CONTENT);
             }
-            
+
             // Delete each file
             let mut deleted_count = 0;
             for file_info in file_infos {
@@ -1086,7 +1106,7 @@ async fn handle_file_delete(
                 }
                 deleted_count += 1;
             }
-            
+
             tracing::info!("Deleted {} files for document: {}", deleted_count, doc_id);
             return Ok(StatusCode::NO_CONTENT);
         } else {
@@ -1105,9 +1125,9 @@ async fn handle_file_delete(
 }
 
 /// Delete a specific file by hash
-/// 
+///
 /// This endpoint accepts either:
-/// - A file token with the doc_id (hash not required) 
+/// - A file token with the doc_id (hash not required)
 /// - A doc token with the doc_id
 /// - A server token
 ///
@@ -1155,7 +1175,7 @@ async fn handle_file_delete_by_hash(
 
             // Construct the file path
             let key = format!("files/{}/{}", doc_id, file_hash);
-            
+
             // Check if the file exists before trying to delete it
             let exists = server_state
                 .store
@@ -1164,7 +1184,7 @@ async fn handle_file_delete_by_hash(
                 .exists(&key)
                 .await
                 .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-            
+
             if !exists {
                 // If the file is already gone, return 204 No Content since DELETE is idempotent
                 tracing::debug!("File already deleted: {}/{}", doc_id, file_hash);
@@ -1198,14 +1218,14 @@ async fn handle_file_delete_by_hash(
 }
 
 /// Handle HEAD request to check if a file exists in S3 storage
-/// 
+///
 /// Returns:
 /// - 200 OK if the file exists
 /// - 404 Not Found if the file doesn't exist
 /// - Other status codes for authentication/authorization errors
 
 /// Get the history of all files for a document
-/// 
+///
 /// This endpoint accepts either:
 /// - A file token with the doc_id (hash not required)
 /// - A doc token with the doc_id
@@ -1252,12 +1272,12 @@ async fn handle_file_history(
     // List files in the document's directory
     let prefix = format!("files/{}/", doc_id);
     let store = server_state.store.as_ref().unwrap();
-    
+
     let file_infos = store
         .list(&prefix)
         .await
         .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-    
+
     // Convert the raw file info into the API response format
     let files = file_infos
         .into_iter()
@@ -1267,8 +1287,63 @@ async fn handle_file_history(
             created_at: info.last_modified,
         })
         .collect();
-    
+
     Ok(Json(FileHistoryResponse { files }))
+}
+
+async fn handle_doc_versions(
+    State(server_state): State<Arc<Server>>,
+    Path(doc_id): Path<String>,
+    auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
+) -> Result<Json<DocumentVersionResponse>, AppError> {
+    let token = get_token_from_header(auth_header);
+
+    if let Some(authenticator) = &server_state.authenticator {
+        if let Some(token) = token.as_deref() {
+            let auth = authenticator
+                .verify_doc_token(token, &doc_id, current_time_epoch_millis())
+                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+
+            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                return Err(AppError(
+                    StatusCode::FORBIDDEN,
+                    anyhow!("Insufficient permissions to view document versions"),
+                ));
+            }
+        } else {
+            return Err(AppError(
+                StatusCode::UNAUTHORIZED,
+                anyhow!("No token provided"),
+            ));
+        }
+    }
+
+    let store = match &server_state.store {
+        Some(s) => s,
+        None => {
+            return Err(AppError(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                anyhow!("No store configured for operations"),
+            ))
+        }
+    };
+
+    let key = format!("{}/data.ysweet", doc_id);
+    let versions = store
+        .list_versions(&key)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+    let entries = versions
+        .into_iter()
+        .map(|v| DocumentVersionEntry {
+            version_id: v.version_id,
+            created_at: v.last_modified,
+            is_latest: v.is_latest,
+        })
+        .collect();
+
+    Ok(Json(DocumentVersionResponse { versions: entries }))
 }
 
 async fn handle_file_head(
@@ -1321,7 +1396,7 @@ async fn handle_file_head(
 
                 // Construct the file path with proper format - using doc_id/file_hash
                 let key = format!("files/{}/{}", doc_id, file_hash);
-                
+
                 // Check if the file exists with a direct call to S3
                 let exists = server_state
                     .store
@@ -1330,7 +1405,7 @@ async fn handle_file_head(
                     .exists(&key)
                     .await
                     .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-                
+
                 if exists {
                     tracing::debug!("File exists: {}/{}", doc_id, file_hash);
                     return Ok(StatusCode::OK);
@@ -1491,42 +1566,42 @@ mod test {
         assert_eq!(token.doc_id, doc_id);
         assert!(token.token.is_none());
     }
-    
+
     #[tokio::test]
     async fn test_file_head_endpoint() {
-        use std::sync::Arc;
-        use std::collections::HashMap;
-        use y_sweet_core::store::Result as StoreResult;
         use async_trait::async_trait;
-        
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        use y_sweet_core::store::Result as StoreResult;
+
         // Create a mock store for testing
         #[derive(Clone)]
         struct MockStore {
             files: Arc<HashMap<String, Vec<u8>>>,
         }
-        
+
         #[async_trait]
         impl Store for MockStore {
             async fn init(&self) -> StoreResult<()> {
                 Ok(())
             }
-            
+
             async fn get(&self, key: &str) -> StoreResult<Option<Vec<u8>>> {
                 Ok(self.files.get(key).cloned())
             }
-            
+
             async fn set(&self, _key: &str, _value: Vec<u8>) -> StoreResult<()> {
                 Ok(())
             }
-            
+
             async fn remove(&self, _key: &str) -> StoreResult<()> {
                 Ok(())
             }
-            
+
             async fn exists(&self, key: &str) -> StoreResult<bool> {
                 Ok(self.files.contains_key(key))
             }
-            
+
             async fn generate_upload_url(
                 &self,
                 _key: &str,
@@ -1535,17 +1610,17 @@ mod test {
             ) -> StoreResult<Option<String>> {
                 Ok(Some("http://mock-upload-url".to_string()))
             }
-            
+
             async fn generate_download_url(&self, _key: &str) -> StoreResult<Option<String>> {
                 Ok(Some("http://mock-download-url".to_string()))
             }
         }
-        
+
         // Create a mock authenticator
         let authenticator = y_sweet_core::auth::Authenticator::gen_key().unwrap();
         let doc_id = "test-doc-123";
         let file_hash = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
-        
+
         // Generate a file token
         let token = authenticator.gen_file_token(
             file_hash,
@@ -1555,29 +1630,33 @@ mod test {
             None,
             None,
         );
-        
+
         // Set up the mock store with the test file
         let mut mock_files = HashMap::new();
         mock_files.insert(format!("files/{}/{}", doc_id, file_hash), vec![1, 2, 3, 4]);
-        
-        let mock_store = MockStore { files: Arc::new(mock_files) };
-        
+
+        let mock_store = MockStore {
+            files: Arc::new(mock_files),
+        };
+
         // Create the server with our mock components
-        let server_state = Arc::new(Server::new(
-            Some(Box::new(mock_store)),
-            Duration::from_secs(60),
-            Some(authenticator.clone()),
-            None,
-            CancellationToken::new(),
-            true,
-            None,
-        )
-        .await
-        .unwrap());
-        
+        let server_state = Arc::new(
+            Server::new(
+                Some(Box::new(mock_store)),
+                Duration::from_secs(60),
+                Some(authenticator.clone()),
+                None,
+                CancellationToken::new(),
+                true,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+
         // Create auth header with token
         let headers = TypedHeader(headers::Authorization::bearer(&token).unwrap());
-        
+
         // Test the HEAD endpoint - should return 200 OK for existing file
         let result = handle_file_head(
             State(server_state.clone()),
@@ -1585,12 +1664,16 @@ mod test {
             Some(headers.clone()),
         )
         .await;
-        
-        assert!(result.is_ok(), "HEAD request should succeed for existing file");
+
+        assert!(
+            result.is_ok(),
+            "HEAD request should succeed for existing file"
+        );
         assert_eq!(result.unwrap(), StatusCode::OK);
-        
+
         // Test a file that doesn't exist
-        let nonexistent_file_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let nonexistent_file_hash =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
         let nonexistent_token = authenticator.gen_file_token(
             nonexistent_file_hash,
             doc_id,
@@ -1599,17 +1682,21 @@ mod test {
             None,
             None,
         );
-        
-        let nonexistent_headers = TypedHeader(headers::Authorization::bearer(&nonexistent_token).unwrap());
-        
+
+        let nonexistent_headers =
+            TypedHeader(headers::Authorization::bearer(&nonexistent_token).unwrap());
+
         let result = handle_file_head(
             State(server_state),
             Path(doc_id.to_string()),
             Some(nonexistent_headers),
         )
         .await;
-        
-        assert!(result.is_err(), "HEAD request should fail for non-existent file");
+
+        assert!(
+            result.is_err(),
+            "HEAD request should fail for non-existent file"
+        );
         match result {
             Err(AppError(status, _)) => assert_eq!(status, StatusCode::NOT_FOUND),
             _ => panic!("Expected NOT_FOUND status for non-existent file"),
