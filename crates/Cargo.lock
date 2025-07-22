@@ -1549,11 +1549,11 @@ checksum = "955d28af4278de8121b7ebeb796b6a45735dc01436d898801014aced2773a3d6"
 [[package]]
 name = "rusty-s3"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f51a5a6b15f25d3e10c068039ee13befb6110fcb36c2b26317bcbdc23484d96"
+source = "git+https://github.com/dtkav/rusty-s3?branch=main#377ce9aca45336c4818782508e5dc5b43079a866"
 dependencies = [
  "base64 0.22.1",
  "hmac",
+ "jiff",
  "md-5",
  "percent-encoding",
  "quick-xml 0.37.2",
@@ -1824,7 +1824,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5dfd88e563464686c916c7e46e623e520ddc6d79fa6641390f2e3fa86e83e885"
 dependencies = [
  "deranged",
- "itoa",
  "js-sys",
  "num-conv",
  "powerfmt",

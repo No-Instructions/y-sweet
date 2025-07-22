@@ -18,7 +18,7 @@ Relay Server is a fork of [jamsocket/y-sweet](https://github.com/jamsocket/y-swe
 
 ## Self-hosting
 
-> :information_source: **Note:** The Relay Server and Relay Obsidian Plugin are open source, but the Relay Control Plan is not open source. Using a Self-Hosted Relay Server with more than 3 collaborators requires a paid license to support the development of Relay.
+> :information_source: **Note:** The Relay Server and Relay Obsidian Plugin are open source, but the Relay Control Plane is not open source. Using a Self-Hosted Relay Server with more than 3 collaborators requires a paid license to support the development of Relay.
 
 
 Self-hosting gives you complete privacy for your notes and attachments. Relay's Control Plane handles login and permissions, but cannot read your content. The recommended setup uses Docker with Cloudflare R2 for persistence.
