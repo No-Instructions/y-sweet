@@ -37,8 +37,16 @@ class YSignTokenGenerator:
             binary_path: Optional path to the y-sign binary. If not provided,
                          will look for 'y-sign' in PATH.
         """
+        import shutil
+
         self.auth_key = auth_key
-        self.binary_path = binary_path or "y-sign"
+        if binary_path is None:
+            found = shutil.which("y-sign")
+            if not found:
+                raise YSignBinaryError("y-sign binary not found in PATH")
+            self.binary_path = found
+        else:
+            self.binary_path = binary_path
 
     def _run_y_sign(self, args: List[str], input_data: Optional[Union[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
         """
@@ -66,9 +74,9 @@ class YSignTokenGenerator:
         stdin_data = None
         if input_data is not None:
             if isinstance(input_data, dict):
-                stdin_data = json.dumps(input_data).encode('utf-8')
+                stdin_data = json.dumps(input_data)
             else:
-                stdin_data = str(input_data).encode('utf-8')
+                stdin_data = str(input_data)
 
         try:
             # Run the command
@@ -77,21 +85,32 @@ class YSignTokenGenerator:
                 input=stdin_data,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=True
+                text=True,
+                check=True,
             )
             
             # Process the output
-            stdout = result.stdout.decode('utf-8').strip()
+            stdout_data = result.stdout
+            if isinstance(stdout_data, bytes):
+                stdout = stdout_data.decode("utf-8").strip()
+            else:
+                stdout = str(stdout_data).strip()
             try:
                 return json.loads(stdout)
             except json.JSONDecodeError as e:
                 raise YSignError(f"Failed to parse y-sign output as JSON: {e}. Output: {stdout}")
                 
         except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode('utf-8').strip()
-            raise YSignBinaryError(f"y-sign binary failed", e.returncode, stderr)
+            stderr = e.stderr.strip()
+            raise YSignBinaryError("y-sign binary failed", e.returncode, stderr)
         
-    def generate_document_token(self, doc_id: str, authorization: Authorization = Authorization.FULL) -> Dict[str, Any]:
+    def generate_document_token(
+        self,
+        doc_id: str,
+        authorization: Authorization = Authorization.FULL,
+        *,
+        cwt: bool = False,
+    ) -> Dict[str, Any]:
         """
         Generate a token for accessing a document.
 
@@ -108,14 +127,19 @@ class YSignTokenGenerator:
             "authorization": authorization.value
         }
         
-        return self._run_y_sign(["sign"], data)
+        args = ["sign"]
+        if cwt:
+            args.append("--cwt")
+        return self._run_y_sign(args, data)
     
     def generate_file_token(
-        self, 
-        file_hash: str, 
+        self,
+        file_hash: str,
         authorization: Authorization = Authorization.FULL,
         content_type: Optional[str] = None,
-        content_length: Optional[int] = None
+        content_length: Optional[int] = None,
+        *,
+        cwt: bool = False,
     ) -> Dict[str, Any]:
         """
         Generate a token for accessing a file.
@@ -142,7 +166,10 @@ class YSignTokenGenerator:
         if content_length is not None:
             data["contentLength"] = content_length
         
-        return self._run_y_sign(["sign"], data)
+        args = ["sign"]
+        if cwt:
+            args.append("--cwt")
+        return self._run_y_sign(args, data)
     
     def verify_token(self, token: str, resource_id: str) -> Dict[str, Any]:
         """
@@ -159,14 +186,13 @@ class YSignTokenGenerator:
             YSignError: If the token is invalid
         """
         result = self._run_y_sign(["verify", "--doc-id", resource_id], token)
-        
-        # Check if verification failed
+
         verification = result.get("verification", {})
         if verification.get("valid", False) is not True:
             error = verification.get("error", "Unknown error")
-            raise YSignInvalidTokenError(f"Token verification failed: {error}")
-        
-        return verification
+            raise YSignInvalidTokenError(f"Invalid token: {error}")
+
+        return result
     
     def is_token_valid(self, token: str, resource_id: str) -> bool:
         """
