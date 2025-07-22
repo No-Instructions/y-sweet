@@ -246,6 +246,421 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+
+  /doc/ws/{docId}:
+    get:
+      summary: Deprecated WebSocket Endpoint
+      description: |
+        Establishes a WebSocket connection. Deprecated; use `POST /doc/{docId}/auth` and connect
+        to the returned `url` instead.
+      deprecated: true
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: token
+          required: false
+          schema:
+            type: string
+      responses:
+        '101':
+          description: Switching Protocols
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /d/{docId}/as-update:
+    get:
+      summary: Get Document Update
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '200':
+          description: Document update
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /d/{docId}/update:
+    post:
+      summary: Update Document
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Document updated
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /d/{docId}/versions:
+    get:
+      summary: List Document Versions
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '200':
+          description: Document version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentVersionResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /d/{docId}/ws/{docId2}:
+    get:
+      summary: Connect via WebSocket
+      description: WebSocket endpoint with the document ID repeated for compatibility with y-websocket clients.
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: docId2
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: token
+          required: false
+          schema:
+            type: string
+      responses:
+        '101':
+          description: Switching Protocols
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /f/{docId}/upload-url:
+    post:
+      summary: Generate File Upload URL
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '200':
+          description: Upload URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileUploadUrlResponse'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /f/{docId}/download-url:
+    get:
+      summary: Generate File Download URL
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '200':
+          description: Download URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileDownloadUrlResponse'
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /f/{docId}/history:
+    get:
+      summary: List Uploaded Files
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '200':
+          description: File history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileHistoryResponse'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /f/{docId}:
+    delete:
+      summary: Delete All Files for Document
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '204':
+          description: Files deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    head:
+      summary: Check File Exists
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+          description: Document ID
+      responses:
+        '200':
+          description: File exists
+        '404':
+          description: File not found
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /f/{docId}/{hash}:
+    delete:
+      summary: Delete File by Hash
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: docId
+          required: true
+          schema:
+            type: string
+        - in: path
+          name: hash
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: File deleted
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: File not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhook/reload:
+    post:
+      summary: Reload Webhook Configuration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Reload status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  message:
+                    type: string
 components:
   securitySchemes:
     bearerAuth:
@@ -290,3 +705,46 @@ components:
           type: string
           description: Authentication token (may be null)
           nullable: true
+    FileUploadUrlResponse:
+      type: object
+      properties:
+        uploadUrl:
+          type: string
+    FileDownloadUrlResponse:
+      type: object
+      properties:
+        downloadUrl:
+          type: string
+    FileHistoryEntry:
+      type: object
+      properties:
+        hash:
+          type: string
+        size:
+          type: integer
+        createdAt:
+          type: integer
+          description: Unix timestamp in milliseconds
+    FileHistoryResponse:
+      type: object
+      properties:
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileHistoryEntry'
+    DocumentVersionEntry:
+      type: object
+      properties:
+        versionId:
+          type: string
+        createdAt:
+          type: integer
+        isLatest:
+          type: boolean
+    DocumentVersionResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentVersionEntry'

@@ -1,3 +1,5 @@
+use crate::api_types::NANOID_ALPHABET;
+use crate::store::Store;
 use crate::store::Store;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -235,7 +237,7 @@ impl WebhookDispatcher {
     ) -> Result<(), WebhookError> {
         let payload = WebhookPayload {
             event_type: "document.updated".to_string(),
-            event_id: format!("evt_{}", nanoid::nanoid!()),
+            event_id: format!("evt_{}", nanoid::nanoid!(21, NANOID_ALPHABET)),
             payload: serde_json::json!({
                 "doc_id": doc_id.clone(),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
