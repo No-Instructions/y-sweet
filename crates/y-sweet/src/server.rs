@@ -6,7 +6,7 @@ use axum::{
         Path, Query, Request, State, WebSocketUpgrade,
     },
     http::{
-        header::{HeaderMap, HeaderName, HeaderValue},
+        header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE},
         StatusCode,
     },
     middleware::{self, Next},
@@ -23,6 +23,7 @@ use std::{
     sync::{Arc, RwLock},
     time::Duration,
 };
+use swagger_ui::Assets;
 use tokio::{
     net::TcpListener,
     sync::mpsc::{channel, Receiver},
@@ -443,6 +444,9 @@ impl Server {
             .route("/f/:doc_id/:hash", delete(handle_file_delete_by_hash))
             .route("/f/:doc_id", head(handle_file_head))
             .route("/webhook/reload", post(reload_webhook_config_endpoint))
+            .route("/openapi.yaml", get(openapi_yaml))
+            .route("/docs", get(swagger_ui))
+            .route("/docs/*file", get(swagger_ui))
             .with_state(self.clone())
     }
 
@@ -1485,6 +1489,38 @@ async fn reload_webhook_config_endpoint(
                 anyhow!("Failed to reload webhook configuration: {}", e),
             ))
         }
+    }
+}
+
+static OPENAPI_YAML: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../openapi/server.yml"
+));
+
+async fn openapi_yaml() -> impl IntoResponse {
+    ([(CONTENT_TYPE, "application/yaml")], OPENAPI_YAML)
+}
+
+async fn swagger_ui(Path(file): Path<Option<String>>) -> impl IntoResponse {
+    let path = file.as_deref().unwrap_or("index.html");
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    if let Some(asset) = Assets::get(path) {
+        let mut bytes = asset.into_owned();
+        if path == "index.html" {
+            if let Ok(mut index_str) = String::from_utf8(bytes.to_vec()) {
+                index_str = index_str.replace(
+                    "https://petstore.swagger.io/v2/swagger.json",
+                    "/openapi.yaml",
+                );
+                return ([(CONTENT_TYPE, "text/html; charset=utf-8")], index_str).into_response();
+            }
+        }
+
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        ([(CONTENT_TYPE, mime.as_ref())], bytes).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
     }
 }
 
