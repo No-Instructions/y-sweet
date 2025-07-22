@@ -14,6 +14,7 @@ Relay Server is a fork of [jamsocket/y-sweet](https://github.com/jamsocket/y-swe
  - Flexible deployment/isolation with single server or session‑per‑document model
  - Python SDK
  - Webhook Event Delivery
+ - OpenAPI documentation available at `/docs` (spec at `/openapi.yaml`)
 
 
 ## Self-hosting

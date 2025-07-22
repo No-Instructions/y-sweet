@@ -33,6 +33,8 @@ yrs = { version = "0.19.1" }
 yrs-kvstore = "0.3.0"
 bincode = "1.3.3"
 hex = "0.4.3"
+swagger-ui = "0.1.5"
+mime_guess = "2.0.5"
 
 [dev-dependencies]
 http = "1.1.0"
