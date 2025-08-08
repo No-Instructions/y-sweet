@@ -7,6 +7,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, error, info};
+use crate::api_types::NANOID_ALPHABET;
 use crate::store::Store;
 
 #[derive(Error, Debug)]
@@ -208,7 +209,7 @@ impl WebhookDispatcher {
     async fn send_single_webhook(client: &Client, config: &WebhookConfig, doc_id: String) -> Result<(), WebhookError> {
         let payload = WebhookPayload {
             event_type: "document.updated".to_string(),
-            event_id: format!("evt_{}", nanoid::nanoid!()),
+            event_id: format!("evt_{}", nanoid::nanoid!(21, NANOID_ALPHABET)),
             payload: serde_json::json!({
                 "doc_id": doc_id.clone(),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
