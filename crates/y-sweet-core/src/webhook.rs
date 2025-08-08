@@ -9,6 +9,7 @@ use tokio::time::{timeout, sleep};
 use tracing::{debug, error, info};
 use crate::api_types::NANOID_ALPHABET;
 use crate::store::Store;
+use crate::webhook_metrics::WebhookMetrics;
 
 #[derive(Error, Debug)]
 pub enum WebhookError {
@@ -79,10 +80,28 @@ pub struct WebhookDispatcher {
     pub configs: Vec<WebhookConfig>,
     queues: HashMap<String, mpsc::UnboundedSender<String>>,
     shutdown_senders: Vec<mpsc::UnboundedSender<()>>,
+    metrics: Arc<WebhookMetrics>,
 }
 
 impl WebhookDispatcher {
     pub fn new(configs: Vec<WebhookConfig>) -> Result<Self, WebhookError> {
+        Self::new_with_metrics(configs, None)
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(configs: Vec<WebhookConfig>) -> Result<Self, WebhookError> {
+        let metrics = WebhookMetrics::new_for_test()
+            .map_err(|e| WebhookError::Configuration(format!("Failed to initialize test metrics: {}", e)))?;
+        Self::new_with_metrics(configs, Some(metrics))
+    }
+
+    fn new_with_metrics(configs: Vec<WebhookConfig>, metrics_override: Option<Arc<WebhookMetrics>>) -> Result<Self, WebhookError> {
+        let metrics = match metrics_override {
+            Some(m) => m,
+            None => WebhookMetrics::new()
+                .map_err(|e| WebhookError::Configuration(format!("Failed to initialize metrics: {}", e)))?
+        };
+        
         let mut queues = HashMap::new();
         let mut shutdown_senders = Vec::new();
         
@@ -93,14 +112,19 @@ impl WebhookDispatcher {
             queues.insert(config.prefix.clone(), tx);
             shutdown_senders.push(shutdown_tx);
             
+            // Set initial dispatcher metrics
+            metrics.set_active_dispatchers(&config.prefix, 1);
+            metrics.set_queue_length(&config.prefix, 0);
+            
             // Spawn worker task for this prefix with shutdown signal
             let config_clone = config.clone();
+            let metrics_clone = metrics.clone();
             tokio::spawn(async move {
-                Self::webhook_worker_with_shutdown(config_clone, rx, shutdown_rx).await;
+                Self::webhook_worker_with_shutdown(config_clone, rx, shutdown_rx, metrics_clone).await;
             });
         }
         
-        Ok(WebhookDispatcher { configs, queues, shutdown_senders })
+        Ok(WebhookDispatcher { configs, queues, shutdown_senders, metrics })
     }
     
     /// Load webhook configuration from store
@@ -164,6 +188,7 @@ impl WebhookDispatcher {
         config: WebhookConfig,
         mut rx: mpsc::UnboundedReceiver<String>,
         mut shutdown_rx: mpsc::UnboundedReceiver<()>,
+        metrics: Arc<WebhookMetrics>,
     ) {
         let client = Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
@@ -185,7 +210,7 @@ impl WebhookDispatcher {
             // Then check for document updates with timeout
             match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
                 Ok(Some(doc_id)) => {
-                    if let Err(e) = Self::send_single_webhook(&client, &config, doc_id.clone()).await {
+                    if let Err(e) = Self::send_single_webhook(&client, &config, doc_id.clone(), &metrics).await {
                         error!("Failed to send webhook for document {} with prefix '{}': {}", doc_id, config.prefix, e);
                     }
                 }
@@ -212,7 +237,9 @@ impl WebhookDispatcher {
         matches.into_iter().map(|config| config.prefix.clone()).collect()
     }
     
-    async fn send_single_webhook(client: &Client, config: &WebhookConfig, doc_id: String) -> Result<(), WebhookError> {
+    async fn send_single_webhook(client: &Client, config: &WebhookConfig, doc_id: String, metrics: &WebhookMetrics) -> Result<(), WebhookError> {
+        let start_time = Instant::now();
+        
         let payload = WebhookPayload {
             event_type: "document.updated".to_string(),
             event_id: format!("evt_{}", nanoid::nanoid!(21, NANOID_ALPHABET)),
@@ -234,19 +261,31 @@ impl WebhookDispatcher {
         
         let request = request.json(&payload);
         
-        let response = timeout(Duration::from_millis(config.timeout_ms), request.send())
+        let result = timeout(Duration::from_millis(config.timeout_ms), request.send())
             .await
             .map_err(|_| WebhookError::Timeout(format!("Webhook request timed out after {}ms", config.timeout_ms)))?
-            .map_err(|e| WebhookError::RequestFailed(e.to_string()))?;
+            .map_err(|e| WebhookError::RequestFailed(e.to_string()));
         
-        if response.status().is_success() {
-            info!("Webhook sent successfully for document {} to prefix '{}'", doc_id, config.prefix);
-            Ok(())
-        } else {
-            let status = response.status();
-            let error_msg = format!("Webhook failed with status {}", status);
-            error!("Webhook failed for document {} to prefix '{}': {}", doc_id, config.prefix, error_msg);
-            Err(WebhookError::RequestFailed(error_msg))
+        let duration = start_time.elapsed().as_secs_f64();
+        
+        match result {
+            Ok(response) => {
+                if response.status().is_success() {
+                    metrics.record_webhook_request(&config.prefix, &doc_id, "success", duration);
+                    info!("Webhook sent successfully for document {} to prefix '{}'", doc_id, config.prefix);
+                    Ok(())
+                } else {
+                    let status_code = response.status().as_u16().to_string();
+                    metrics.record_webhook_request(&config.prefix, &doc_id, &status_code, duration);
+                    let error_msg = format!("Webhook failed with status {}", response.status());
+                    error!("Webhook failed for document {} to prefix '{}': {}", doc_id, config.prefix, error_msg);
+                    Err(WebhookError::RequestFailed(error_msg))
+                }
+            }
+            Err(e) => {
+                metrics.record_webhook_request(&config.prefix, &doc_id, "error", duration);
+                Err(e)
+            }
         }
     }
 }
@@ -309,11 +348,19 @@ impl DebouncedWebhookQueue {
         
         // Start cleanup task
         let cleanup_queues = document_queues.clone();
+        let dispatcher_for_cleanup = dispatcher.clone();
         let cleanup_handle = Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
             loop {
                 interval.tick().await;
                 Self::cleanup_idle_queues(&cleanup_queues).await;
+                
+                // Update queue length metrics
+                let queues = cleanup_queues.read().await;
+                for config in &dispatcher_for_cleanup.configs {
+                    let queue_count = queues.len();
+                    dispatcher_for_cleanup.metrics.set_queue_length(&config.prefix, queue_count);
+                }
             }
         }));
         
@@ -322,6 +369,14 @@ impl DebouncedWebhookQueue {
             dispatcher,
             cleanup_handle,
         }
+    }
+    
+    pub fn configs(&self) -> &Vec<WebhookConfig> {
+        &self.dispatcher.configs
+    }
+    
+    pub fn metrics(&self) -> &Arc<WebhookMetrics> {
+        &self.dispatcher.metrics
     }
     
     pub async fn queue_webhook(&self, doc_id: String) {
@@ -488,7 +543,7 @@ mod tests {
             },
         ];
         
-        let dispatcher = WebhookDispatcher::new(configs).unwrap();
+        let dispatcher = WebhookDispatcher::new_for_test(configs).unwrap();
         
         // Test longest-matching-prefix
         let matches = dispatcher.find_matching_prefixes("user_admin_123");
@@ -515,12 +570,12 @@ mod tests {
                 auth_token: None,
             },
         ];
-        let test_dispatcher = WebhookDispatcher::new(test_configs).unwrap();
+        let test_dispatcher = WebhookDispatcher::new_for_test(test_configs).unwrap();
         let matches = test_dispatcher.find_matching_prefixes("test_document");
         assert_eq!(matches, vec!["test_"]);
         
         // Test no matches (empty config)
-        let empty_dispatcher = WebhookDispatcher::new(vec![]).unwrap();
+        let empty_dispatcher = WebhookDispatcher::new_for_test(vec![]).unwrap();
         let matches = empty_dispatcher.find_matching_prefixes("anything");
         assert_eq!(matches, Vec::<String>::new());
     }
@@ -584,7 +639,7 @@ mod tests {
             },
         ];
         
-        let dispatcher = WebhookDispatcher::new(configs).unwrap();
+        let dispatcher = WebhookDispatcher::new_for_test(configs).unwrap();
         
         // Test webhook queuing
         dispatcher.send_webhooks("test:123".to_string());
@@ -608,7 +663,7 @@ mod tests {
             },
         ];
         
-        let dispatcher = Arc::new(WebhookDispatcher::new(configs).unwrap());
+        let dispatcher = Arc::new(WebhookDispatcher::new_for_test(configs).unwrap());
         let queue = Arc::new(DebouncedWebhookQueue::new(dispatcher));
         
         let doc_id = "test_rate_limit".to_string();
@@ -642,7 +697,7 @@ mod tests {
             },
         ];
         
-        let dispatcher = Arc::new(WebhookDispatcher::new(configs).unwrap());
+        let dispatcher = Arc::new(WebhookDispatcher::new_for_test(configs).unwrap());
         let queue = Arc::new(DebouncedWebhookQueue::new(dispatcher));
         
         let doc_id = "test_debounce".to_string();
@@ -678,7 +733,7 @@ mod tests {
             },
         ];
         
-        let dispatcher = Arc::new(WebhookDispatcher::new(configs).unwrap());
+        let dispatcher = Arc::new(WebhookDispatcher::new_for_test(configs).unwrap());
         let queue = Arc::new(DebouncedWebhookQueue::new(dispatcher));
         
         let doc_id = "test_cleanup".to_string();

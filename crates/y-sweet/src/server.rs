@@ -42,7 +42,7 @@ use y_sweet_core::{
     store::Store,
     sync::awareness::Awareness,
     sync_kv::SyncKv,
-    webhook::{create_webhook_callback, WebhookDispatcher},
+    webhook::{create_debounced_webhook_callback, DebouncedWebhookQueue, WebhookDispatcher},
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
@@ -95,7 +95,7 @@ pub struct Server {
     /// Whether to garbage collect docs that are no longer in use.
     /// Disabled for single-doc mode, since we only have one doc.
     doc_gc: bool,
-    webhook_dispatcher: Arc<RwLock<Option<Arc<WebhookDispatcher>>>>,
+    webhook_queue: Arc<RwLock<Option<Arc<DebouncedWebhookQueue>>>>,
 }
 
 impl Server {
@@ -109,6 +109,9 @@ impl Server {
         doc_gc: bool,
         webhook_dispatcher: Option<WebhookDispatcher>,
     ) -> Result<Self> {
+        let webhook_queue = webhook_dispatcher
+            .map(|dispatcher| Arc::new(DebouncedWebhookQueue::new(Arc::new(dispatcher))));
+        
         Ok(Self {
             docs: Arc::new(DashMap::new()),
             doc_worker_tracker: TaskTracker::new(),
@@ -119,7 +122,7 @@ impl Server {
             allowed_hosts,
             cancellation_token,
             doc_gc,
-            webhook_dispatcher: Arc::new(RwLock::new(webhook_dispatcher.map(Arc::new))),
+            webhook_queue: Arc::new(RwLock::new(webhook_queue)),
         })
     }
 
@@ -167,23 +170,37 @@ impl Server {
             (new_dispatcher, "store")
         };
 
-        // Update webhook dispatcher with write lock
+        // Get reference to old queue before acquiring write lock
+        let old_queue = {
+            let queue_guard = self.webhook_queue.read().unwrap();
+            queue_guard.clone()
+        };
+
+        // Gracefully shutdown old queue if it exists (outside of lock)
+        if let Some(old_queue) = old_queue {
+            old_queue.shutdown().await;
+        }
+
+        // Update webhook queue with write lock
         {
-            let mut dispatcher_guard = self.webhook_dispatcher.write().unwrap();
-
-            // Gracefully shutdown old dispatcher if it exists
-            if let Some(old_dispatcher) = dispatcher_guard.as_ref() {
-                old_dispatcher.shutdown();
-            }
-
-            *dispatcher_guard = new_dispatcher.map(Arc::new);
+            let mut queue_guard = self.webhook_queue.write().unwrap();
+            *queue_guard = new_dispatcher
+                .map(|dispatcher| Arc::new(DebouncedWebhookQueue::new(Arc::new(dispatcher))));
+        }
+        
+        // Record metrics for config reload
+        if let Some(queue) = &*self.webhook_queue.read().unwrap() {
+            queue.metrics().record_config_reload("success");
         }
 
         // Return status message and log configuration details
-        let status = match &*self.webhook_dispatcher.read().unwrap() {
-            Some(dispatcher) => {
+        let status = match &*self.webhook_queue.read().unwrap() {
+            Some(queue) => {
+                // Access dispatcher configs through the queue
+                let configs = queue.configs();
+                
                 // Print configuration details
-                for config in &dispatcher.configs {
+                for config in configs {
                     tracing::info!(
                         "Webhook config: prefix='{}' -> url='{}' (timeout: {}ms)",
                         config.prefix,
@@ -194,7 +211,7 @@ impl Server {
                 format!(
                     "Webhook configuration loaded from {} with {} configs",
                     config_source,
-                    dispatcher.configs.len()
+                    configs.len()
                 )
             }
             None => format!(
@@ -222,10 +239,10 @@ impl Server {
         let (send, recv) = channel(1024);
 
         let webhook_callback = {
-            let dispatcher_guard = self.webhook_dispatcher.read().unwrap();
-            dispatcher_guard
+            let queue_guard = self.webhook_queue.read().unwrap();
+            queue_guard
                 .as_ref()
-                .map(|dispatcher| create_webhook_callback(dispatcher.clone()))
+                .map(|queue| create_debounced_webhook_callback(queue.clone()))
         };
 
         let dwskv = DocWithSyncKv::new(
@@ -463,6 +480,12 @@ impl Server {
             .with_state(self.clone())
     }
 
+    pub fn metrics_routes(self: &Arc<Self>) -> Router {
+        Router::new()
+            .route("/metrics", get(metrics_endpoint))
+            .with_state(self.clone())
+    }
+
     async fn serve_internal(
         self: Arc<Self>,
         listener: TcpListener,
@@ -498,6 +521,12 @@ impl Server {
         let s = Arc::new(self);
         let routes = s.single_doc_routes();
         s.serve_internal(listener, redact_errors, routes).await
+    }
+
+    pub async fn serve_metrics(self, listener: TcpListener) -> Result<()> {
+        let s = Arc::new(self);
+        let routes = s.metrics_routes();
+        s.serve_internal(listener, false, routes).await
     }
 
     fn verify_doc_token(&self, token: Option<&str>, doc: &str) -> Result<Authorization, AppError> {
@@ -1521,6 +1550,22 @@ async fn reload_webhook_config_endpoint(
             ))
         }
     }
+}
+
+async fn metrics_endpoint(
+    State(_server_state): State<Arc<Server>>,
+) -> Result<String, AppError> {
+    use prometheus::{Encoder, TextEncoder};
+    
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+    
+    encoder.encode(&metric_families, &mut buffer)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, anyhow!("Failed to encode metrics: {}", e)))?;
+    
+    Ok(String::from_utf8(buffer)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, anyhow!("Failed to convert metrics to string: {}", e)))?)
 }
 
 #[cfg(test)]

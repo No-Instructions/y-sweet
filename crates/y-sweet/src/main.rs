@@ -6,6 +6,7 @@ use std::{
     env,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
@@ -15,6 +16,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use url::Url;
 use y_sweet::cli::{print_auth_message, print_server_url, sign_stdin, verify_stdin};
 use y_sweet::server::AllowedHost;
+use axum::middleware;
 use y_sweet::stores::filesystem::FileSystemStore;
 use y_sweet_core::{
     auth::Authenticator,
@@ -44,6 +46,8 @@ enum ServSubcommand {
         port: u16,
         #[clap(long, env = "RELAY_SERVER_HOST")]
         host: Option<IpAddr>,
+        #[clap(long, default_value = "9090", env = "METRICS_PORT")]
+        metrics_port: u16,
         #[clap(long, default_value = "10", env = "RELAY_SERVER_CHECKPOINT_FREQ_SECONDS")]
         checkpoint_freq_seconds: u64,
 
@@ -191,6 +195,7 @@ async fn main() -> Result<()> {
         ServSubcommand::Serve {
             port,
             host,
+            metrics_port,
             checkpoint_freq_seconds,
             store,
             auth,
@@ -212,6 +217,13 @@ async fn main() -> Result<()> {
 
             let listener = TcpListener::bind(addr).await?;
             let addr = listener.local_addr()?;
+
+            let metrics_addr = SocketAddr::new(
+                host.unwrap_or(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+                *metrics_port,
+            );
+            let metrics_listener = TcpListener::bind(metrics_addr).await?;
+            let metrics_addr = metrics_listener.local_addr()?;
 
             let store = if let Some(store) = store {
                 let store = get_store_from_opts(store)?;
@@ -249,11 +261,36 @@ async fn main() -> Result<()> {
             }
 
             let prod = *prod;
-            let handle = tokio::spawn(async move {
-                server.serve(listener, prod).await.unwrap();
+            let server = Arc::new(server);
+            
+            let main_handle = tokio::spawn({
+                let server = server.clone();
+                let token = token.clone();
+                async move {
+                    let routes = server.routes();
+                    let app = routes.layer(middleware::from_fn(y_sweet::server::Server::version_header_middleware));
+                    let app = if prod {
+                        app
+                    } else {
+                        app.layer(middleware::from_fn(y_sweet::server::Server::redact_error_middleware))
+                    };
+                    axum::serve(listener, app.into_make_service())
+                        .with_graceful_shutdown(async move { token.cancelled().await })
+                        .await.unwrap();
+                }
+            });
+
+            let metrics_handle = tokio::spawn({
+                let server = server.clone();
+                async move {
+                    let metrics_routes = server.metrics_routes();
+                    axum::serve(metrics_listener, metrics_routes.into_make_service())
+                        .await.unwrap();
+                }
             });
 
             tracing::info!("Listening on ws://{}", addr);
+            tracing::info!("Metrics listening on http://{}", metrics_addr);
 
             tokio::signal::ctrl_c()
                 .await
@@ -262,7 +299,7 @@ async fn main() -> Result<()> {
             tracing::info!("Shutting down.");
             token.cancel();
 
-            handle.await?;
+            let _ = tokio::join!(main_handle, metrics_handle);
             tracing::info!("Server shut down.");
         }
         ServSubcommand::GenAuth { json } => {
