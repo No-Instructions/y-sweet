@@ -42,11 +42,17 @@ use y_sweet_core::{
     store::Store,
     sync::awareness::Awareness,
     sync_kv::SyncKv,
-    webhook::{create_webhook_callback, WebhookDispatcher},
+    webhook::{create_debounced_webhook_callback, DebouncedWebhookQueue, WebhookDispatcher},
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
 const RELAY_SERVER_VERSION: &str = env!("GIT_VERSION");
+
+#[derive(Clone, Debug)]
+pub struct AllowedHost {
+    pub host: String,
+    pub scheme: String, // "http" or "https"
+}
 
 fn current_time_epoch_millis() -> u64 {
     let now = std::time::SystemTime::now();
@@ -84,11 +90,12 @@ pub struct Server {
     checkpoint_freq: Duration,
     authenticator: Option<Authenticator>,
     url_prefix: Option<Url>,
+    allowed_hosts: Vec<AllowedHost>,
     cancellation_token: CancellationToken,
     /// Whether to garbage collect docs that are no longer in use.
     /// Disabled for single-doc mode, since we only have one doc.
     doc_gc: bool,
-    webhook_dispatcher: Arc<RwLock<Option<Arc<WebhookDispatcher>>>>,
+    webhook_queue: Arc<RwLock<Option<Arc<DebouncedWebhookQueue>>>>,
 }
 
 impl Server {
@@ -97,10 +104,14 @@ impl Server {
         checkpoint_freq: Duration,
         authenticator: Option<Authenticator>,
         url_prefix: Option<Url>,
+        allowed_hosts: Vec<AllowedHost>,
         cancellation_token: CancellationToken,
         doc_gc: bool,
         webhook_dispatcher: Option<WebhookDispatcher>,
     ) -> Result<Self> {
+        let webhook_queue = webhook_dispatcher
+            .map(|dispatcher| Arc::new(DebouncedWebhookQueue::new(Arc::new(dispatcher))));
+
         Ok(Self {
             docs: Arc::new(DashMap::new()),
             doc_worker_tracker: TaskTracker::new(),
@@ -108,9 +119,10 @@ impl Server {
             checkpoint_freq,
             authenticator,
             url_prefix,
+            allowed_hosts,
             cancellation_token,
             doc_gc,
-            webhook_dispatcher: Arc::new(RwLock::new(webhook_dispatcher.map(Arc::new))),
+            webhook_queue: Arc::new(RwLock::new(webhook_queue)),
         })
     }
 
@@ -158,23 +170,37 @@ impl Server {
             (new_dispatcher, "store")
         };
 
-        // Update webhook dispatcher with write lock
+        // Get reference to old queue before acquiring write lock
+        let old_queue = {
+            let queue_guard = self.webhook_queue.read().unwrap();
+            queue_guard.clone()
+        };
+
+        // Gracefully shutdown old queue if it exists (outside of lock)
+        if let Some(old_queue) = old_queue {
+            old_queue.shutdown().await;
+        }
+
+        // Update webhook queue with write lock
         {
-            let mut dispatcher_guard = self.webhook_dispatcher.write().unwrap();
+            let mut queue_guard = self.webhook_queue.write().unwrap();
+            *queue_guard = new_dispatcher
+                .map(|dispatcher| Arc::new(DebouncedWebhookQueue::new(Arc::new(dispatcher))));
+        }
 
-            // Gracefully shutdown old dispatcher if it exists
-            if let Some(old_dispatcher) = dispatcher_guard.as_ref() {
-                old_dispatcher.shutdown();
-            }
-
-            *dispatcher_guard = new_dispatcher.map(Arc::new);
+        // Record metrics for config reload
+        if let Some(queue) = &*self.webhook_queue.read().unwrap() {
+            queue.metrics().record_config_reload("success");
         }
 
         // Return status message and log configuration details
-        let status = match &*self.webhook_dispatcher.read().unwrap() {
-            Some(dispatcher) => {
+        let status = match &*self.webhook_queue.read().unwrap() {
+            Some(queue) => {
+                // Access dispatcher configs through the queue
+                let configs = queue.configs();
+
                 // Print configuration details
-                for config in &dispatcher.configs {
+                for config in configs {
                     tracing::info!(
                         "Webhook config: prefix='{}' -> url='{}' (timeout: {}ms)",
                         config.prefix,
@@ -185,7 +211,7 @@ impl Server {
                 format!(
                     "Webhook configuration loaded from {} with {} configs",
                     config_source,
-                    dispatcher.configs.len()
+                    configs.len()
                 )
             }
             None => format!(
@@ -213,10 +239,10 @@ impl Server {
         let (send, recv) = channel(1024);
 
         let webhook_callback = {
-            let dispatcher_guard = self.webhook_dispatcher.read().unwrap();
-            dispatcher_guard
+            let queue_guard = self.webhook_queue.read().unwrap();
+            queue_guard
                 .as_ref()
-                .map(|dispatcher| create_webhook_callback(dispatcher.clone()))
+                .map(|queue| create_debounced_webhook_callback(queue.clone()))
         };
 
         let dwskv = DocWithSyncKv::new(
@@ -454,6 +480,12 @@ impl Server {
             .with_state(self.clone())
     }
 
+    pub fn metrics_routes(self: &Arc<Self>) -> Router {
+        Router::new()
+            .route("/metrics", get(metrics_endpoint))
+            .with_state(self.clone())
+    }
+
     async fn serve_internal(
         self: Arc<Self>,
         listener: TcpListener,
@@ -489,6 +521,12 @@ impl Server {
         let s = Arc::new(self);
         let routes = s.single_doc_routes();
         s.serve_internal(listener, redact_errors, routes).await
+    }
+
+    pub async fn serve_metrics(self, listener: TcpListener) -> Result<()> {
+        let s = Arc::new(self);
+        let routes = s.metrics_routes();
+        s.serve_internal(listener, false, routes).await
     }
 
     fn verify_doc_token(&self, token: Option<&str>, doc: &str) -> Result<Authorization, AppError> {
@@ -797,6 +835,57 @@ async fn new_doc(
     Ok(Json(NewDocResponse { doc_id }))
 }
 
+fn generate_context_aware_urls(
+    url_prefix: &Option<Url>,
+    allowed_hosts: &[AllowedHost],
+    request_host: &str,
+    doc_id: &str,
+) -> Result<(String, String), AppError> {
+    // Priority 1: Explicit URL prefix
+    if let Some(prefix) = url_prefix {
+        let ws_scheme = if prefix.scheme() == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
+        let mut ws_url = prefix.clone();
+        ws_url.set_scheme(ws_scheme).unwrap();
+        let ws_url = ws_url
+            .join(&format!("/d/{}/ws", doc_id))
+            .unwrap()
+            .to_string();
+
+        let base_url = format!("{}/d/{}", prefix.as_str().trim_end_matches('/'), doc_id);
+        return Ok((ws_url, base_url));
+    }
+
+    // Priority 2: Context-derived URL from Host header
+    if let Some(allowed) = allowed_hosts.iter().find(|h| h.host == request_host) {
+        let ws_scheme = if allowed.scheme == "https" {
+            "wss"
+        } else {
+            "ws"
+        };
+        let ws_url = format!("{}://{}/d/{}/ws", ws_scheme, request_host, doc_id);
+        let base_url = format!("{}://{}/d/{}", allowed.scheme, request_host, doc_id);
+        return Ok((ws_url, base_url));
+    }
+
+    // Priority 3: Fallback to old behavior for backward compatibility
+    // This handles the case where no URL prefix and no allowed hosts are set
+    if allowed_hosts.is_empty() {
+        let ws_url = format!("ws://{}/d/{}/ws", request_host, doc_id);
+        let base_url = format!("http://{}/d/{}", request_host, doc_id);
+        return Ok((ws_url, base_url));
+    }
+
+    // Reject unknown hosts when allowed_hosts is configured
+    Err(AppError(
+        StatusCode::BAD_REQUEST,
+        anyhow!("Host '{}' not in allowed hosts list", request_host),
+    ))
+}
+
 async fn auth_doc(
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
     TypedHeader(host): TypedHeader<headers::Host>,
@@ -827,26 +916,12 @@ async fn auth_doc(
         None
     };
 
-    let url = if let Some(url_prefix) = &server_state.url_prefix {
-        let mut url = url_prefix.clone();
-        let scheme = if url.scheme() == "https" { "wss" } else { "ws" };
-        url.set_scheme(scheme).unwrap();
-        url = url.join(&format!("/d/{doc_id}/ws")).unwrap();
-        url.to_string()
-    } else {
-        format!("ws://{host}/d/{doc_id}/ws")
-    };
-
-    let base_url = if let Some(url_prefix) = &server_state.url_prefix {
-        let mut url_prefix = url_prefix.to_string();
-        if !url_prefix.ends_with('/') {
-            url_prefix = format!("{url_prefix}/");
-        }
-
-        format!("{url_prefix}d/{doc_id}")
-    } else {
-        format!("http://{host}/d/{doc_id}")
-    };
+    let (url, base_url) = generate_context_aware_urls(
+        &server_state.url_prefix,
+        &server_state.allowed_hosts,
+        &host.to_string(),
+        &doc_id,
+    )?;
 
     Ok(Json(ClientToken {
         url,
@@ -1488,6 +1563,28 @@ async fn reload_webhook_config_endpoint(
     }
 }
 
+async fn metrics_endpoint(State(_server_state): State<Arc<Server>>) -> Result<String, AppError> {
+    use prometheus::{Encoder, TextEncoder};
+
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    let mut buffer = Vec::new();
+
+    encoder.encode(&metric_families, &mut buffer).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("Failed to encode metrics: {}", e),
+        )
+    })?;
+
+    Ok(String::from_utf8(buffer).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("Failed to convert metrics to string: {}", e),
+        )
+    })?)
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -1501,6 +1598,7 @@ mod test {
             Duration::from_secs(60),
             None,
             None,
+            vec![],
             CancellationToken::new(),
             true,
             None,
@@ -1540,6 +1638,7 @@ mod test {
             Duration::from_secs(60),
             None,
             Some(prefix),
+            vec![],
             CancellationToken::new(),
             true,
             None,
@@ -1646,6 +1745,7 @@ mod test {
                 Duration::from_secs(60),
                 Some(authenticator.clone()),
                 None,
+                vec![],
                 CancellationToken::new(),
                 true,
                 None,
@@ -1701,5 +1801,159 @@ mod test {
             Err(AppError(status, _)) => assert_eq!(status, StatusCode::NOT_FOUND),
             _ => panic!("Expected NOT_FOUND status for non-existent file"),
         };
+    }
+
+    #[tokio::test]
+    async fn test_generate_context_aware_urls_with_prefix() {
+        let url_prefix: Url = "https://api.example.com".parse().unwrap();
+        let allowed_hosts = vec![];
+        let doc_id = "test-doc";
+
+        let (ws_url, base_url) =
+            generate_context_aware_urls(&Some(url_prefix), &allowed_hosts, "unused-host", doc_id)
+                .unwrap();
+
+        assert_eq!(ws_url, "wss://api.example.com/d/test-doc/ws");
+        assert_eq!(base_url, "https://api.example.com/d/test-doc");
+    }
+
+    #[tokio::test]
+    async fn test_generate_context_aware_urls_with_allowed_hosts() {
+        let allowed_hosts = vec![
+            AllowedHost {
+                host: "api.example.com".to_string(),
+                scheme: "https".to_string(),
+            },
+            AllowedHost {
+                host: "app.flycast".to_string(),
+                scheme: "http".to_string(),
+            },
+        ];
+        let doc_id = "test-doc";
+
+        // Test HTTPS host
+        let (ws_url, base_url) =
+            generate_context_aware_urls(&None, &allowed_hosts, "api.example.com", doc_id).unwrap();
+
+        assert_eq!(ws_url, "wss://api.example.com/d/test-doc/ws");
+        assert_eq!(base_url, "https://api.example.com/d/test-doc");
+
+        // Test flycast host
+        let (ws_url, base_url) =
+            generate_context_aware_urls(&None, &allowed_hosts, "app.flycast", doc_id).unwrap();
+
+        assert_eq!(ws_url, "ws://app.flycast/d/test-doc/ws");
+        assert_eq!(base_url, "http://app.flycast/d/test-doc");
+    }
+
+    #[tokio::test]
+    async fn test_generate_context_aware_urls_rejects_unknown_host() {
+        let allowed_hosts = vec![AllowedHost {
+            host: "api.example.com".to_string(),
+            scheme: "https".to_string(),
+        }];
+        let doc_id = "test-doc";
+
+        let result = generate_context_aware_urls(&None, &allowed_hosts, "malicious.host", doc_id);
+
+        assert!(result.is_err());
+        match result {
+            Err(AppError(StatusCode::BAD_REQUEST, _)) => {} // Expected
+            _ => panic!("Expected BAD_REQUEST for unknown host"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_auth_doc_with_context_aware_urls() {
+        let allowed_hosts = vec![
+            AllowedHost {
+                host: "api.example.com".to_string(),
+                scheme: "https".to_string(),
+            },
+            AllowedHost {
+                host: "app.flycast".to_string(),
+                scheme: "http".to_string(),
+            },
+        ];
+
+        let server_state = Arc::new(
+            Server::new(
+                None,
+                Duration::from_secs(60),
+                None,
+                None, // No URL prefix - use context-aware generation
+                allowed_hosts.clone(),
+                CancellationToken::new(),
+                true,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+
+        let doc_id = server_state.create_doc().await.unwrap();
+
+        // Test with HTTPS host
+        let token = auth_doc(
+            None,
+            TypedHeader(headers::Host::from(http::uri::Authority::from_static(
+                "api.example.com",
+            ))),
+            State(server_state.clone()),
+            Path(doc_id.clone()),
+            Some(Json(AuthDocRequest {
+                authorization: Authorization::Full,
+                user_id: None,
+                valid_for_seconds: None,
+            })),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(token.url, format!("wss://api.example.com/d/{}/ws", doc_id));
+        assert_eq!(
+            token.base_url,
+            Some(format!("https://api.example.com/d/{}", doc_id))
+        );
+
+        // Test with flycast host - create another server instance with same allowed hosts
+        let server_state2 = Arc::new(
+            Server::new(
+                None,
+                Duration::from_secs(60),
+                None,
+                None,
+                allowed_hosts,
+                CancellationToken::new(),
+                true,
+                None,
+            )
+            .await
+            .unwrap(),
+        );
+
+        server_state2.load_doc(&doc_id).await.unwrap();
+
+        let token = auth_doc(
+            None,
+            TypedHeader(headers::Host::from(http::uri::Authority::from_static(
+                "app.flycast",
+            ))),
+            State(server_state2),
+            Path(doc_id.clone()),
+            Some(Json(AuthDocRequest {
+                authorization: Authorization::Full,
+                user_id: None,
+                valid_for_seconds: None,
+            })),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(token.url, format!("ws://app.flycast/d/{}/ws", doc_id));
+        assert_eq!(
+            token.base_url,
+            Some(format!("http://app.flycast/d/{}", doc_id))
+        );
     }
 }

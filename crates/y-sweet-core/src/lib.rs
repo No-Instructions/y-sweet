@@ -6,3 +6,4 @@ pub mod store;
 pub mod sync;
 pub mod sync_kv;
 pub mod webhook;
+pub mod webhook_metrics;
