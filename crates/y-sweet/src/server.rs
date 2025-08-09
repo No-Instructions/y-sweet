@@ -83,6 +83,11 @@ impl std::fmt::Display for AppError {
     }
 }
 
+#[derive(Deserialize)]
+struct FileDownloadQueryParams {
+    hash: Option<String>,
+}
+
 pub struct Server {
     docs: Arc<DashMap<String, DocWithSyncKv>>,
     doc_worker_tracker: TaskTracker,
@@ -1036,71 +1041,82 @@ async fn handle_file_upload_url(
 async fn handle_file_download_url(
     State(server_state): State<Arc<Server>>,
     Path(doc_id): Path<String>,
+    Query(params): Query<FileDownloadQueryParams>,
     auth_header: Option<TypedHeader<headers::Authorization<headers::authorization::Bearer>>>,
 ) -> Result<Json<FileDownloadUrlResponse>, AppError> {
     // Get token
     let token = get_token_from_header(auth_header);
 
-    // Verify token is for this doc_id and extract file hash
+    // Check if we have authentication configured
     if let Some(authenticator) = &server_state.authenticator {
         if let Some(token) = token.as_deref() {
-            // Verify token is for this doc_id
-            let auth = authenticator
-                .verify_file_token_for_doc(token, &doc_id, current_time_epoch_millis())
-                .map_err(|e| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token: {}", e)))?;
+            // Extract hash from query parameter if present
+            let query_hash = params.hash;
 
-            // Both ReadOnly and Full can download files
-            if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
-                return Err(AppError(
-                    StatusCode::FORBIDDEN,
-                    anyhow!("Insufficient permissions to download file"),
-                ));
-            }
-
-            // Decode the token to get the file hash
+            // Decode the token to determine its type
             let payload = authenticator
                 .decode_token(token)
                 .map_err(|_| AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")))?;
 
-            if let Permission::File(file_permission) = payload.payload {
-                let file_hash = file_permission.file_hash;
+            match payload.payload {
+                Permission::File(file_permission) => {
+                    // Verify file token for doc
+                    if let Ok(auth) = authenticator.verify_file_token_for_doc(
+                        token,
+                        &doc_id,
+                        current_time_epoch_millis(),
+                    ) {
+                        // Both ReadOnly and Full can download files
+                        if !matches!(auth, Authorization::ReadOnly | Authorization::Full) {
+                            return Err(AppError(
+                                StatusCode::FORBIDDEN,
+                                anyhow!("Insufficient permissions to download file"),
+                            ));
+                        }
 
-                // Validate the file hash
-                if !validate_file_hash(&file_hash) {
+                        let file_hash = file_permission.file_hash;
+
+                        // Validate the file hash
+                        if !validate_file_hash(&file_hash) {
+                            return Err(AppError(
+                                StatusCode::BAD_REQUEST,
+                                anyhow!("Invalid file hash format in token"),
+                            ));
+                        }
+
+                        // Generate download URL using hash from token
+                        return generate_file_download_url(&server_state, &doc_id, &file_hash)
+                            .await;
+                    } else {
+                        return Err(AppError(StatusCode::UNAUTHORIZED, anyhow!("Invalid token")));
+                    }
+                }
+                Permission::Server => {
+                    // Server token is valid, use hash from query parameter
+                    if let Some(hash) = query_hash {
+                        // Validate the file hash from query parameter
+                        if !validate_file_hash(&hash) {
+                            return Err(AppError(
+                                StatusCode::BAD_REQUEST,
+                                anyhow!("Invalid file hash format in query parameter"),
+                            ));
+                        }
+
+                        // Generate download URL using hash from query parameter
+                        return generate_file_download_url(&server_state, &doc_id, &hash).await;
+                    } else {
+                        return Err(AppError(
+                            StatusCode::BAD_REQUEST,
+                            anyhow!("Hash query parameter required when using server token"),
+                        ));
+                    }
+                }
+                Permission::Doc(_) => {
                     return Err(AppError(
                         StatusCode::BAD_REQUEST,
-                        anyhow!("Invalid file hash format in token"),
+                        anyhow!("Document tokens cannot be used for file operations"),
                     ));
                 }
-
-                // Check if we have a store configured
-                if server_state.store.is_none() {
-                    return Err(AppError(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        anyhow!("No store configured for file downloads"),
-                    ));
-                }
-
-                // Generate the download URL - using doc_id/file_hash path structure
-                let key = format!("files/{}/{}", doc_id, file_hash);
-                let download_url = server_state
-                    .store
-                    .as_ref()
-                    .unwrap()
-                    .generate_download_url(&key)
-                    .await
-                    .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
-
-                if let Some(url) = download_url {
-                    return Ok(Json(FileDownloadUrlResponse { download_url: url }));
-                } else {
-                    return Err(AppError(StatusCode::NOT_FOUND, anyhow!("File not found")));
-                }
-            } else {
-                return Err(AppError(
-                    StatusCode::BAD_REQUEST,
-                    anyhow!("Token is not a file token"),
-                ));
             }
         } else {
             return Err(AppError(
@@ -1114,6 +1130,36 @@ async fn handle_file_download_url(
             StatusCode::UNAUTHORIZED,
             anyhow!("Authentication is required for file operations"),
         ));
+    }
+}
+
+async fn generate_file_download_url(
+    server_state: &Arc<Server>,
+    doc_id: &str,
+    file_hash: &str,
+) -> Result<Json<FileDownloadUrlResponse>, AppError> {
+    // Check if we have a store configured
+    if server_state.store.is_none() {
+        return Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("No store configured for file downloads"),
+        ));
+    }
+
+    // Generate the download URL - using doc_id/file_hash path structure
+    let key = format!("files/{}/{}", doc_id, file_hash);
+    let download_url = server_state
+        .store
+        .as_ref()
+        .unwrap()
+        .generate_download_url(&key)
+        .await
+        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+
+    if let Some(url) = download_url {
+        Ok(Json(FileDownloadUrlResponse { download_url: url }))
+    } else {
+        Err(AppError(StatusCode::NOT_FOUND, anyhow!("File not found")))
     }
 }
 

@@ -473,6 +473,12 @@ paths:
           schema:
             type: string
           description: Document ID
+        - in: query
+          name: hash
+          required: false
+          schema:
+            type: string
+          description: File hash (required when using server token, optional for file token)
       responses:
         '200':
           description: Download URL
