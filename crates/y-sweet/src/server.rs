@@ -42,7 +42,7 @@ use y_sweet_core::{
     store::Store,
     sync::awareness::Awareness,
     sync_kv::SyncKv,
-    webhook::{create_debounced_webhook_callback, DebouncedWebhookQueue, WebhookDispatcher},
+    webhook::{DebouncedWebhookQueue, WebhookCallback, WebhookDispatcher},
 };
 
 const PLANE_VERIFIED_USER_DATA_HEADER: &str = "x-verified-user-data";
@@ -101,6 +101,7 @@ pub struct Server {
     /// Disabled for single-doc mode, since we only have one doc.
     doc_gc: bool,
     webhook_queue: Arc<RwLock<Option<Arc<DebouncedWebhookQueue>>>>,
+    pending_webhooks: Arc<RwLock<Vec<String>>>,
 }
 
 impl Server {
@@ -128,6 +129,7 @@ impl Server {
             cancellation_token,
             doc_gc,
             webhook_queue: Arc::new(RwLock::new(webhook_queue)),
+            pending_webhooks: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -175,22 +177,43 @@ impl Server {
             (new_dispatcher, "store")
         };
 
-        // Get reference to old queue before acquiring write lock
-        let old_queue = {
+        // Get reference to old queue and collect pending webhooks
+        let (old_queue, pending_webhooks) = {
             let queue_guard = self.webhook_queue.read().unwrap();
-            queue_guard.clone()
+            let old_queue = queue_guard.clone();
+            drop(queue_guard);
+
+            // Collect any pending webhooks while queue is None
+            let mut pending = self.pending_webhooks.write().unwrap();
+            let webhooks = pending.drain(..).collect::<Vec<_>>();
+            drop(pending);
+
+            (old_queue, webhooks)
         };
 
-        // Gracefully shutdown old queue if it exists (outside of lock)
-        if let Some(old_queue) = old_queue {
-            old_queue.shutdown().await;
-        }
+        // Create new queue and update atomically
+        let new_queue = new_dispatcher
+            .map(|dispatcher| Arc::new(DebouncedWebhookQueue::new(Arc::new(dispatcher))));
 
         // Update webhook queue with write lock
         {
             let mut queue_guard = self.webhook_queue.write().unwrap();
-            *queue_guard = new_dispatcher
-                .map(|dispatcher| Arc::new(DebouncedWebhookQueue::new(Arc::new(dispatcher))));
+            *queue_guard = new_queue.clone();
+        }
+
+        // Replay any pending webhooks to the new queue
+        if let Some(queue) = new_queue.as_ref() {
+            for doc_id in pending_webhooks {
+                let queue_clone = queue.clone();
+                tokio::spawn(async move {
+                    queue_clone.queue_webhook(doc_id).await;
+                });
+            }
+        }
+
+        // Gracefully shutdown old queue after new queue is active
+        if let Some(old_queue) = old_queue {
+            old_queue.shutdown().await;
         }
 
         // Record metrics for config reload
@@ -244,10 +267,24 @@ impl Server {
         let (send, recv) = channel(1024);
 
         let webhook_callback = {
-            let queue_guard = self.webhook_queue.read().unwrap();
-            queue_guard
-                .as_ref()
-                .map(|queue| create_debounced_webhook_callback(queue.clone()))
+            let webhook_queue_ref = self.webhook_queue.clone();
+            let pending_webhooks_ref = self.pending_webhooks.clone();
+            Some(Arc::new(move |doc_id: String| {
+                // Try to get current webhook queue
+                let queue_guard = webhook_queue_ref.read().unwrap();
+                if let Some(queue) = queue_guard.as_ref() {
+                    let queue_clone = queue.clone();
+                    drop(queue_guard); // Release read lock before async work
+                    tokio::spawn(async move {
+                        queue_clone.queue_webhook(doc_id).await;
+                    });
+                } else {
+                    // No queue available, buffer the webhook for replay after reload
+                    drop(queue_guard); // Release read lock before write lock
+                    let mut pending = pending_webhooks_ref.write().unwrap();
+                    pending.push(doc_id);
+                }
+            }) as WebhookCallback)
         };
 
         let dwskv = DocWithSyncKv::new(
