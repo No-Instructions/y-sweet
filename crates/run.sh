@@ -16,6 +16,7 @@ use_legacy_var() {
 
 use_legacy_var RELAY_SERVER_URL Y_SWEET_URL_PREFIX
 use_legacy_var RELAY_SERVER_STORAGE Y_SWEET_STORE
+use_legacy_var RELAY_SERVER_AUTH Y_SWEET_AUTH
 
 # If RELAY_SERVER_URL is not set but FLY_APP_NAME is, construct the URL
 if [ -z "$RELAY_SERVER_URL" ] && [ -n "$FLY_APP_NAME" ]; then
