@@ -39,10 +39,16 @@ pub struct WebhookPayload {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WebhookConfig {
+    #[serde(default)]
     pub prefix: String,
     pub url: String,
+    #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     pub auth_token: Option<String>,
+}
+
+fn default_timeout_ms() -> u64 {
+    5000
 }
 
 #[derive(Serialize, Deserialize, Debug)]
